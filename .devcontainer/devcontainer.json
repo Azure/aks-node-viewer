@@ -1,0 +1,22 @@
+{
+    "image": "mcr.microsoft.com/devcontainers/go:1.19-bullseye",
+	"customizations": {
+		"vscode": {
+			"extensions": [
+                "golang.Go",
+                "ms-kubernetes-tools.vscode-kubernetes-tools",
+                "mutantdino.resourcemonitor",
+                "GitHub.vscode-pull-request-github"
+            ]
+        }
+    },
+	"remoteUser": "vscode",
+	"features": {
+        "ghcr.io/devcontainers/features/kubectl-helm-minikube:1": {
+            "version": "latest"
+        },
+        "ghcr.io/devcontainers/features/azure-cli:1": {
+            "version": "latest"
+        }
+	}
+}
