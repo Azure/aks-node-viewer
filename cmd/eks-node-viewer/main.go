@@ -25,8 +25,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aws/aws-sdk-go/aws/defaults"
-	"github.com/aws/aws-sdk-go/aws/session"
 	tea "github.com/charmbracelet/bubbletea"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -72,12 +70,7 @@ func main() {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 
-	defaults.SharedCredentialsFilename()
-	pprov := pricing.NewStaticProvider()
-	if !flags.DisablePricing {
-		sess := session.Must(session.NewSession(nil))
-		pprov = pricing.NewProvider(ctx, sess)
-	}
+	pprov := pricing.NewProvider(ctx, pricing.NewAPI(), "eastus")
 	m := model.NewUIModel(strings.Split(flags.ExtraLabels, ","))
 
 	m.SetResources(strings.FieldsFunc(flags.Resources, func(r rune) bool { return r == ',' }))
