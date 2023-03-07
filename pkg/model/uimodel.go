@@ -25,7 +25,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	v1 "k8s.io/api/core/v1"
 
-	"github.com/awslabs/eks-node-viewer/pkg/text"
+	"github.com/Azure/aks-node-viewer/pkg/text"
 )
 
 var helpStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#626262")).Render

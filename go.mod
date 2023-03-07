@@ -1,4 +1,4 @@
-module github.com/awslabs/eks-node-viewer
+module github.com/Azure/aks-node-viewer
 
 go 1.19
 

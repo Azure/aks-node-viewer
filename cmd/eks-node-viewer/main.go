@@ -35,9 +35,9 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
 
-	"github.com/awslabs/eks-node-viewer/pkg/client"
-	"github.com/awslabs/eks-node-viewer/pkg/model"
-	"github.com/awslabs/eks-node-viewer/pkg/pricing"
+	"github.com/Azure/aks-node-viewer/pkg/client"
+	"github.com/Azure/aks-node-viewer/pkg/model"
+	"github.com/Azure/aks-node-viewer/pkg/pricing"
 )
 
 //go:generate cp -r ../../ATTRIBUTION.md ./
