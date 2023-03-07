@@ -22,10 +22,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Azure/karpenter/pkg/providers/pricing/client"
-	"github.com/aws/karpenter-core/pkg/utils/pretty"
+	"github.com/Azure/aks-node-viewer/pkg/pricing/client"
 	"github.com/samber/lo"
-	"knative.dev/pkg/logging"
 )
 
 // Provider provides actual pricing data to the Azure cloud provider to allow it to make more informed decisions
@@ -37,7 +35,6 @@ import (
 type Provider struct {
 	pricing client.PricingAPI
 	region  string
-	cm      *pretty.ChangeMonitor
 
 	mu                 sync.RWMutex
 	onDemandUpdateTime time.Time
@@ -67,9 +64,7 @@ func NewProvider(ctx context.Context, pricing client.PricingAPI, region string) 
 		onDemandUpdateTime: initialPriceUpdate,
 		onDemandPrices:     staticPricing,
 		pricing:            pricing,
-		cm:                 pretty.NewChangeMonitor(),
 	}
-	ctx = logging.WithLogger(ctx, logging.FromContext(ctx).Named("pricing"))
 
 	go func() {
 		// perform an initial price update at startup
@@ -110,7 +105,6 @@ func (p *Provider) updatePricing(ctx context.Context) {
 	go func() {
 		defer wg.Done()
 		if err := p.UpdateOnDemandPricing(ctx); err != nil {
-			logging.FromContext(ctx).Errorf("updating on-demand pricing, %s, using existing pricing data from %s", err, err.lastUpdateTime.Format(time.RFC3339))
 		}
 	}()
 
@@ -144,9 +138,6 @@ func (p *Provider) UpdateOnDemandPricing(ctx context.Context) *Err {
 
 	p.onDemandPrices = lo.Assign(onDemandPrices)
 	p.onDemandUpdateTime = time.Now()
-	if p.cm.HasChanged("on-demand-prices", p.onDemandPrices) {
-		logging.FromContext(ctx).With("instance-type-count", len(p.onDemandPrices)).Infof("updated on-demand pricing")
-	}
 	return nil
 }
 
