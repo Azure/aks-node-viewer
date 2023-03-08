@@ -70,7 +70,15 @@ func main() {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 
-	pprov := pricing.NewProvider(ctx, pricing.NewAPI(), "eastus")
+	pprov := pricing.NewProvider(ctx, pricing.NewAPI(), "westus2")
+	updateStarted := time.Now()
+	for {
+		if pprov.OnDemandLastUpdated().After(updateStarted) {
+			break
+		}
+		log.Println("waiting on pricing update...")
+		time.Sleep(1 * time.Second)
+	}
 	m := model.NewUIModel(strings.Split(flags.ExtraLabels, ","))
 
 	m.SetResources(strings.FieldsFunc(flags.Resources, func(r rune) bool { return r == ',' }))
@@ -155,10 +163,6 @@ func startMonitor(ctx context.Context, settings *monitorSettings) {
 				node.Price = math.NaN()
 				if node.IsOnDemand() {
 					if price, ok := settings.pricing.OnDemandPrice(node.InstanceType()); ok {
-						node.Price = price
-					}
-				} else if node.IsSpot() {
-					if price, ok := settings.pricing.SpotPrice(node.InstanceType(), node.Zone()); ok {
 						node.Price = price
 					}
 				}
