@@ -57,7 +57,7 @@ func main() {
 	}
 
 	if flags.Version {
-		fmt.Printf("eks-node-viewer version %s\n", version)
+		fmt.Printf("aks-node-viewer version %s\n", version)
 		fmt.Printf("commit: %s\n", commit)
 		fmt.Printf("built at: %s\n", date)
 		fmt.Printf("built by: %s\n", builtBy)

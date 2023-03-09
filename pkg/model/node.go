@@ -44,13 +44,11 @@ func NewNode(n *v1.Node) *Node {
 	return node
 }
 func (n *Node) IsOnDemand() bool {
-	return n.node.Labels["karpenter.sh/capacity-type"] == "on-demand" ||
-		n.node.Labels["eks.amazonaws.com/capacityType"] == "ON_DEMAND"
+	return n.node.Labels["karpenter.sh/capacity-type"] == "on-demand"
 }
 
 func (n *Node) IsSpot() bool {
-	return n.node.Labels["karpenter.sh/capacity-type"] == "spot" ||
-		n.node.Labels["eks.amazonaws.com/capacityType"] == "SPOT"
+	return n.node.Labels["karpenter.sh/capacity-type"] == "spot"
 }
 
 func (n *Node) Update(node *v1.Node) {
