@@ -9,7 +9,7 @@ help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[33m%-20s\033[0m %s\n", $$1, $$2}'
 
 build: generate
-	go build -ldflags="-s -w -X main.version=local -X main.builtBy=Makefile" ./cmd/eks-node-viewer
+	go build -ldflags="-s -w -X main.version=local -X main.builtBy=Makefile" ./cmd/aks-node-viewer
 
 goreleaser:
 	goreleaser build --snapshot --rm-dist
@@ -41,5 +41,5 @@ generate:
 	go generate ./...
 
 clean: ## Clean artifacts
-	rm -rf eks-node-viewer
+	rm -rf aks-node-viewer
 	rm -rf dist/

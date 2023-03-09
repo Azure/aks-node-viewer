@@ -25,8 +25,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aws/aws-sdk-go/aws/defaults"
-	"github.com/aws/aws-sdk-go/aws/session"
 	tea "github.com/charmbracelet/bubbletea"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -35,9 +33,9 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
 
-	"github.com/awslabs/eks-node-viewer/pkg/client"
-	"github.com/awslabs/eks-node-viewer/pkg/model"
-	"github.com/awslabs/eks-node-viewer/pkg/pricing"
+	"github.com/Azure/aks-node-viewer/pkg/client"
+	"github.com/Azure/aks-node-viewer/pkg/model"
+	"github.com/Azure/aks-node-viewer/pkg/pricing"
 )
 
 //go:generate cp -r ../../ATTRIBUTION.md ./
@@ -59,7 +57,7 @@ func main() {
 	}
 
 	if flags.Version {
-		fmt.Printf("eks-node-viewer version %s\n", version)
+		fmt.Printf("aks-node-viewer version %s\n", version)
 		fmt.Printf("commit: %s\n", commit)
 		fmt.Printf("built at: %s\n", date)
 		fmt.Printf("built by: %s\n", builtBy)
@@ -72,11 +70,14 @@ func main() {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 
-	defaults.SharedCredentialsFilename()
-	pprov := pricing.NewStaticProvider()
-	if !flags.DisablePricing {
-		sess := session.Must(session.NewSession(nil))
-		pprov = pricing.NewProvider(ctx, sess)
+	pprov := pricing.NewProvider(ctx, pricing.NewAPI(), "westus2")
+	updateStarted := time.Now()
+	for {
+		if pprov.OnDemandLastUpdated().After(updateStarted) {
+			break
+		}
+		log.Println("waiting on pricing update...")
+		time.Sleep(1 * time.Second)
 	}
 	m := model.NewUIModel(strings.Split(flags.ExtraLabels, ","))
 
@@ -160,14 +161,8 @@ func startMonitor(ctx context.Context, settings *monitorSettings) {
 				node := model.NewNode(obj.(*v1.Node))
 				// lookup our node price
 				node.Price = math.NaN()
-				if node.IsOnDemand() {
-					if price, ok := settings.pricing.OnDemandPrice(node.InstanceType()); ok {
-						node.Price = price
-					}
-				} else if node.IsSpot() {
-					if price, ok := settings.pricing.SpotPrice(node.InstanceType(), node.Zone()); ok {
-						node.Price = price
-					}
+				if price, ok := settings.pricing.OnDemandPrice(node.InstanceType()); ok {
+					node.Price = price
 				}
 				n := cluster.AddNode(node)
 				n.Show()
