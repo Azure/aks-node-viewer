@@ -79,7 +79,8 @@ func (u *UIModel) View() string {
 	}
 	ctw.Flush()
 
-	fmt.Fprintln(&b, helpStyle("Press any key to quit"))
+	fmt.Fprintln(&b, helpStyle("Press any key to refresh"))
+	fmt.Fprintln(&b, helpStyle("Press q to quit"))
 	return b.String()
 }
 
@@ -188,9 +189,14 @@ func tickCmd() tea.Cmd {
 }
 
 func (u *UIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg.(type) {
+	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		return u, tea.Quit
+		switch msg.String() {
+		case "q":
+			return u, tea.Quit
+		default:
+			return u, nil
+		}
 	case tickMsg:
 		return u, tickCmd()
 	default:
