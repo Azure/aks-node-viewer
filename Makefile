@@ -1,4 +1,4 @@
-.PHONY: help clean verify boilerplate licenses download coverage generate
+.PHONY: help clean verify boilerplate download coverage generate
 
 NO_COLOR=\033[0m
 GREEN=\033[32;01m
@@ -18,14 +18,10 @@ download:
 	go mod download
 	go mod tidy
 
-licenses: download
-	go-licenses check ./... --allowed_licenses=MIT,Apache-2.0,BSD-3-Clause,ISC \
-	--ignore github.com/mattn/go-localereader # MIT
-
 boilerplate:
-	go run hack/boilerplate.go ./
+	hack/boilerplate.sh
 
-verify: boilerplate licenses download
+verify: boilerplate download
 	gofmt -w -s ./.
 	golangci-lint run
 
@@ -36,8 +32,6 @@ coverage:
 generate:
 	# run generate twice, gen_licenses needs the ATTRIBUTION file or it fails.  The second run
 	# ensures that the latest copy is embedded when we build.
-	go generate ./...
-	./hack/gen_licenses.sh
 	go generate ./...
 
 clean: ## Clean artifacts
