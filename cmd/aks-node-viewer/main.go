@@ -38,8 +38,6 @@ import (
 	"github.com/Azure/aks-node-viewer/pkg/pricing"
 )
 
-//go:generate cp -r ../../ATTRIBUTION.md ./
-//go:embed ATTRIBUTION.md
 var attribution string
 
 func main() {

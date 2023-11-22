@@ -37,7 +37,7 @@ var (
 
 func init() {
 	homeDir = homedir.HomeDir()
-	configPath = filepath.Join(homeDir, ".eks-node-viewer")
+	configPath = filepath.Join(homeDir, ".aks-node-viewer")
 }
 
 type Flags struct {
@@ -60,8 +60,8 @@ func ParseFlags() (Flags, error) {
 		return Flags{}, fmt.Errorf("load config file: %w", err)
 	}
 
-	flagSet.BoolVar(&flags.Version, "v", false, "Display eks-node-viewer version")
-	flagSet.BoolVar(&flags.Version, "version", false, "Display eks-node-viewer version")
+	flagSet.BoolVar(&flags.Version, "v", false, "Display aks-node-viewer version")
+	flagSet.BoolVar(&flags.Version, "version", false, "Display aks-node-viewer version")
 
 	contextDefault := cfg.getValue("context", "")
 	flagSet.StringVar(&flags.Context, "context", contextDefault, "Name of the kubernetes context to use")

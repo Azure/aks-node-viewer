@@ -55,8 +55,7 @@ func TestNodeTypeUnknown(t *testing.T) {
 
 func TestNodeTypeOnDemand(t *testing.T) {
 	for label, value := range map[string]string{
-		"karpenter.sh/capacity-type":     "on-demand",
-		"eks.amazonaws.com/capacityType": "ON_DEMAND",
+		"karpenter.sh/capacity-type": "on-demand",
 	} {
 		n := testNode("mynode")
 		n.Labels = map[string]string{
@@ -74,8 +73,7 @@ func TestNodeTypeOnDemand(t *testing.T) {
 
 func TestNodeTypeSpot(t *testing.T) {
 	for label, value := range map[string]string{
-		"karpenter.sh/capacity-type":     "spot",
-		"eks.amazonaws.com/capacityType": "SPOT",
+		"karpenter.sh/capacity-type": "spot",
 	} {
 		n := testNode("mynode")
 		n.Labels = map[string]string{
