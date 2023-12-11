@@ -15,9 +15,11 @@ limitations under the License.
 package model
 
 import (
+	"math"
 	"sync"
 	"time"
 
+	"github.com/Azure/aks-node-viewer/pkg/pricing"
 	v1 "k8s.io/api/core/v1"
 )
 
@@ -176,4 +178,23 @@ func (n *Node) Deleting() bool {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	return !n.node.DeletionTimestamp.IsZero()
+}
+
+func (n *Node) HasPrice() bool {
+	// we use NaN for an unknown price, so if this is true the price is known
+	return n.Price == n.Price
+}
+
+func (n *Node) UpdatePrice(pricing *pricing.Provider) {
+	// lookup our n price
+	n.Price = math.NaN()
+	if n.IsOnDemand() {
+		if price, ok := pricing.OnDemandPrice(n.InstanceType()); ok {
+			n.Price = price
+		}
+	} else if n.IsSpot() {
+		if price, ok := pricing.SpotPrice(n.InstanceType()); ok {
+			n.Price = price
+		}
+	}
 }

@@ -20,7 +20,6 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"math"
 	"os"
 	"strings"
 	"time"
@@ -157,11 +156,7 @@ func startMonitor(ctx context.Context, settings *monitorSettings) {
 		cache.ResourceEventHandlerFuncs{
 			AddFunc: func(obj interface{}) {
 				node := model.NewNode(obj.(*v1.Node))
-				// lookup our node price
-				node.Price = math.NaN()
-				if price, ok := settings.pricing.OnDemandPrice(node.InstanceType()); ok {
-					node.Price = price
-				}
+				node.UpdatePrice(settings.pricing)
 				n := cluster.AddNode(node)
 				n.Show()
 			},
