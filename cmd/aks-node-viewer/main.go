@@ -71,13 +71,15 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	pprov := pricing.NewProvider(ctx, pricing.NewAPI(), "westus2")
-	updateStarted := time.Now()
-	for {
-		if pprov.OnDemandLastUpdated().After(updateStarted) {
-			break
+	if flags.WaitForDynamicPricing {
+		updateStarted := time.Now()
+		for {
+			if pprov.OnDemandLastUpdated().After(updateStarted) {
+				break
+			}
+			log.Println("waiting on pricing update...")
+			time.Sleep(1 * time.Second)
 		}
-		log.Println("waiting on pricing update...")
-		time.Sleep(1 * time.Second)
 	}
 	m := model.NewUIModel(strings.Split(flags.ExtraLabels, ","))
 

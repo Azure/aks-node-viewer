@@ -41,14 +41,14 @@ func init() {
 }
 
 type Flags struct {
-	Context         string
-	NodeSelector    string
-	ExtraLabels     string
-	Kubeconfig      string
-	Resources       string
-	DisablePricing  bool
-	ShowAttribution bool
-	Version         bool
+	Context               string
+	NodeSelector          string
+	ExtraLabels           string
+	Kubeconfig            string
+	Resources             string
+	WaitForDynamicPricing bool
+	ShowAttribution       bool
+	Version               bool
 }
 
 func ParseFlags() (Flags, error) {
@@ -79,8 +79,8 @@ func ParseFlags() (Flags, error) {
 	resourcesDefault := cfg.getValue("resources", "cpu")
 	flagSet.StringVar(&flags.Resources, "resources", resourcesDefault, "List of comma separated resources to monitor")
 
-	disablePricingDefault := cfg.getBoolValue("disable-pricing", false)
-	flagSet.BoolVar(&flags.DisablePricing, "disable-pricing", disablePricingDefault, "Disable pricing lookups")
+	waitForDynamicPricing := cfg.getBoolValue("wait-for-dynamic-pricing", false)
+	flagSet.BoolVar(&flags.WaitForDynamicPricing, "wait-for-dynamic-pricing", waitForDynamicPricing, "wait for dynamic pricing lookup")
 
 	flagSet.BoolVar(&flags.ShowAttribution, "attribution", false, "Show the Open Source Attribution")
 
