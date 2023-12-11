@@ -145,7 +145,7 @@ func (p *Provider) updatePricing(ctx context.Context) {
 func (p *Provider) UpdateOnDemandPricing(ctx context.Context) *Err {
 	// standard on-demand instances
 	var wg sync.WaitGroup
-	var onDemandPrices map[string]float64
+	var onDemandPrices = map[string]float64{}
 	var onDemandErr error
 
 	wg.Add(1)
