@@ -94,7 +94,7 @@ func main() {
 		pricing:      pprov,
 	}
 	startMonitor(ctx, monitorSettings)
-	if err := tea.NewProgram(m, tea.WithAltScreen()).Start(); err != nil {
+	if _, err := tea.NewProgram(m, tea.WithAltScreen()).Run(); err != nil {
 		log.Fatalf("error running tea: %s", err)
 	}
 	cancel()
