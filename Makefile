@@ -12,7 +12,7 @@ build: generate
 	go build -ldflags="-s -w -X main.version=local -X main.builtBy=Makefile" ./cmd/aks-node-viewer
 
 goreleaser:
-	goreleaser build --snapshot --rm-dist
+	goreleaser build --snapshot --clean
 
 download:
 	go mod download
