@@ -1,4 +1,5 @@
 project_name: aks-node-viewer
+version: 2
 
 before:
   hooks:
@@ -36,7 +37,7 @@ release:
   prerelease: auto
 
 snapshot:
-  name_template: "{{ incpatch .Version }}-devel"
+  version_template: "{{ incpatch .Version }}-devel"
 
 checksum:
   name_template: "{{ .ProjectName }}_{{ .Version }}_sha256_checksunms.txt"
