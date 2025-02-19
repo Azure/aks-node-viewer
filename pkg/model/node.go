@@ -196,5 +196,9 @@ func (n *Node) UpdatePrice(pricing *pricing.Provider) {
 		if price, ok := pricing.SpotPrice(n.InstanceType()); ok {
 			n.Price = price
 		}
+	} else {
+		if price, ok := pricing.OnDemandPrice(n.InstanceType()); ok {
+			n.Price = price
+		}
 	}
 }
