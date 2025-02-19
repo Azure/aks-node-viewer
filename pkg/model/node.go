@@ -196,6 +196,7 @@ func (n *Node) UpdatePrice(pricing *pricing.Provider) {
 		if price, ok := pricing.SpotPrice(n.InstanceType()); ok {
 			n.Price = price
 		}
+	// Use on-demand prices if no Karpenter label is found
 	} else {
 		if price, ok := pricing.OnDemandPrice(n.InstanceType()); ok {
 			n.Price = price
