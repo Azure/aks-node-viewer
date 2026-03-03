@@ -46,6 +46,7 @@ type Flags struct {
 	ExtraLabels     string
 	Kubeconfig      string
 	Resources       string
+	Region          string
 	DisablePricing  bool
 	ShowAttribution bool
 	Version         bool
@@ -78,6 +79,9 @@ func ParseFlags() (Flags, error) {
 
 	resourcesDefault := cfg.getValue("resources", "cpu")
 	flagSet.StringVar(&flags.Resources, "resources", resourcesDefault, "List of comma separated resources to monitor")
+
+	regionDefault := getStringEnv("AZURE_REGION", cfg.getValue("region", "eastus"))
+	flagSet.StringVar(&flags.Region, "region", regionDefault, "Azure region for pricing lookups (env: AZURE_REGION)")
 
 	disablePricingDefault := cfg.getBoolValue("disable-pricing", false)
 	flagSet.BoolVar(&flags.DisablePricing, "disable-pricing", disablePricingDefault, "Disable pricing lookups")
