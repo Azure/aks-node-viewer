@@ -67,7 +67,7 @@ func main() {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 
-	pprov := pricing.NewProvider(ctx, pricing.NewAPI(), "westus2")
+	pprov := pricing.NewProvider(ctx, pricing.NewAPI(), flags.Region)
 	updateStarted := time.Now()
 	for {
 		if pprov.OnDemandLastUpdated().After(updateStarted) {
