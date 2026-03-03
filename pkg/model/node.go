@@ -46,11 +46,22 @@ func NewNode(n *v1.Node) *Node {
 	return node
 }
 func (n *Node) IsOnDemand() bool {
-	return n.node.Labels["karpenter.sh/capacity-type"] == "on-demand"
+	if n.node.Labels["karpenter.sh/capacity-type"] == "on-demand" {
+		return true
+	}
+	// AKS spot node pools use kubernetes.azure.com/scalesetpriority
+	if v, ok := n.node.Labels["kubernetes.azure.com/scalesetpriority"]; ok {
+		return v == "regular"
+	}
+	return false
 }
 
 func (n *Node) IsSpot() bool {
-	return n.node.Labels["karpenter.sh/capacity-type"] == "spot"
+	if n.node.Labels["karpenter.sh/capacity-type"] == "spot" {
+		return true
+	}
+	// AKS spot node pools use kubernetes.azure.com/scalesetpriority
+	return n.node.Labels["kubernetes.azure.com/scalesetpriority"] == "spot"
 }
 
 func (n *Node) Update(node *v1.Node) {
