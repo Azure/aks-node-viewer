@@ -51,6 +51,12 @@ aks-node-viewer --resources cpu,memory
 aks-node-viewer --extra-labels topology.kubernetes.io/zone
 ```
 
+### Computed Labels
+
+`aks-node-viewer` supports some custom label names that can be passed to the `--extra-labels` to display additional node information. 
+
+- `aks-node-viewer/node-age` - Age of the node
+
 ### Default Options
 You can supply default options to `aks-node-viewer` by creating a file named `.aks-node-viewer` in your home directory and specifying
 options there. The format is `option-name=value` where the option names are the command line flags:
