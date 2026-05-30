@@ -21,6 +21,7 @@ import (
 
 	"github.com/Azure/aks-node-viewer/pkg/pricing"
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/util/duration"
 )
 
 type objectKey struct {
@@ -202,4 +203,13 @@ func (n *Node) UpdatePrice(pricing *pricing.Provider) {
 			n.Price = price
 		}
 	}
+}
+
+// ComputeLabel computes dynamic labels
+func (n *Node) ComputeLabel(labelName string) string {
+	switch labelName {
+	case "aks-node-viewer/node-age":
+		return duration.HumanDuration(time.Since(n.Created()))
+	}
+	return labelName
 }
