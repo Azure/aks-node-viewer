@@ -159,6 +159,7 @@ func (c *Cluster) Stats() Stats {
 		if n.HasPrice() {
 			st.TotalPrice += n.Price()
 		}
+		st.SpotSavings += n.SpotSavings()
 		st.NumNodes++
 		st.Nodes = append(st.Nodes, n)
 		addResources(st.AllocatableResources, n.Allocatable())

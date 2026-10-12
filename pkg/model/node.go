@@ -44,6 +44,10 @@ type Node struct {
 	pods    map[objectKey]*Pod
 	used    v1.ResourceList
 	price   float64
+	// onDemandPrice is the on-demand price for the node's instance type,
+	// regardless of the capacity type actually used. It is math.NaN() when the
+	// on-demand price is unknown and is used to compute spot savings.
+	onDemandPrice float64
 }
 
 func NewNode(n *v1.Node) *Node {
@@ -203,6 +207,21 @@ func (n *Node) HasPrice() bool {
 	return n.Price() == n.Price()
 }
 
+// SpotSavings returns the hourly saving of running this node on spot capacity
+// compared to on-demand. It is zero unless the node is a spot node and both the
+// spot and on-demand prices are known and the spot price is lower.
+func (n *Node) SpotSavings() float64 {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	if !n.isSpotLocked() || math.IsNaN(n.price) || math.IsNaN(n.onDemandPrice) {
+		return 0
+	}
+	if savings := n.onDemandPrice - n.price; savings > 0 {
+		return savings
+	}
+	return 0
+}
+
 // Price returns the last known price for the node. math.NaN() is used to
 // indicate that the price is unknown.
 func (n *Node) Price() float64 {
@@ -221,20 +240,23 @@ func (n *Node) UpdatePrice(pricing *pricing.Provider) {
 func (n *Node) lookupPriceLocked(pprov *pricing.Provider) {
 	// lookup our n price
 	n.price = math.NaN()
+	n.onDemandPrice = math.NaN()
 	instanceType := n.node.Labels[v1.LabelInstanceTypeStable]
+
+	// always resolve the on-demand price so spot savings can be computed
+	if price, ok := pprov.OnDemandPrice(instanceType); ok {
+		n.onDemandPrice = price
+	}
+
 	if n.isOnDemandLocked() {
-		if price, ok := pprov.OnDemandPrice(instanceType); ok {
-			n.price = price
-		}
+		n.price = n.onDemandPrice
 	} else if n.isSpotLocked() {
 		if price, ok := pprov.SpotPrice(instanceType); ok {
 			n.price = price
 		}
 		// Use on-demand prices if no Karpenter label is found
 	} else {
-		if price, ok := pprov.OnDemandPrice(instanceType); ok {
-			n.price = price
-		}
+		n.price = n.onDemandPrice
 	}
 }
 
@@ -252,6 +274,11 @@ func (n *Node) ComputeLabel(labelName string) string {
 	switch labelName {
 	case "aks-node-viewer/node-age", "eks-node-viewer/node-age":
 		return duration.HumanDuration(time.Since(n.Created()))
+	case "aks-node-viewer/node-spot-savings", "eks-node-viewer/node-spot-savings":
+		if savings := n.SpotSavings(); savings > 0 {
+			return fmt.Sprintf("$%0.3f", savings)
+		}
+		return "-"
 	}
 	// resource based custom labels, e.g. eks-node-viewer/node-cpu-usage
 	if match := resourceUsageLabels.FindStringSubmatch(labelName); len(match) > 0 {

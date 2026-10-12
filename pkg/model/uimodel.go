@@ -194,8 +194,17 @@ func (u *UIModel) writeClusterSummary(resources []v1.ResourceName, stats Stats, 
 		clusterPrice := fmt.Sprintf("%0.3f/hour $%0.3f/month", stats.TotalPrice, monthlyPrice)
 		if u.DisablePricing {
 			clusterPrice = ""
-		} else if note := u.pricingNote(); note != "" {
-			clusterPrice += " " + note
+		} else {
+			notes := []string{}
+			if savings := u.spotSavingsNote(stats); savings != "" {
+				notes = append(notes, savings)
+			}
+			if note := u.pricingNote(); note != "" {
+				notes = append(notes, note)
+			}
+			if len(notes) > 0 {
+				clusterPrice += " " + strings.Join(notes, " ")
+			}
 		}
 		if firstLine {
 			fmt.Fprintf(w, "%d nodes\t%s/%s\t%s\t%s\t%s\t%s\n",
@@ -206,6 +215,20 @@ func (u *UIModel) writeClusterSummary(resources []v1.ResourceName, stats Stats, 
 		}
 		firstLine = false
 	}
+}
+
+// spotSavingsNote describes the hourly saving achieved by running nodes on spot
+// capacity instead of on-demand, and the share of the equivalent on-demand cost
+// it represents. It is empty when there are no known savings.
+func (u *UIModel) spotSavingsNote(stats Stats) string {
+	if stats.SpotSavings <= 0 {
+		return ""
+	}
+	pct := 0.0
+	if baseline := stats.TotalPrice + stats.SpotSavings; baseline > 0 {
+		pct = 100 * stats.SpotSavings / baseline
+	}
+	return fmt.Sprintf("saved $%0.3f/hour (%.0f%%)", stats.SpotSavings, pct)
 }
 
 // pricingNote describes where the currently displayed prices came from and how
