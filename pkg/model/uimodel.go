@@ -17,12 +17,14 @@ package model
 import (
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/progress"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/facette/natsort"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/duration"
 
@@ -32,17 +34,22 @@ import (
 var helpStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#626262")).Render
 
 type UIModel struct {
-	progress    progress.Model
-	cluster     *Cluster
-	extraLabels []string
+	progress       progress.Model
+	cluster        *Cluster
+	extraLabels    []string
+	style          *Style
+	nodeSorter     func(lhs, rhs *Node) bool
+	DisablePricing bool
 }
 
-func NewUIModel(extraLabels []string) *UIModel {
+func NewUIModel(extraLabels []string, nodeSort string, style *Style) *UIModel {
 	return &UIModel{
 		// red to green
-		progress:    progress.New(progress.WithGradient("#ff0000", "#04B575")),
+		progress:    progress.New(style.gradient),
 		cluster:     NewCluster(),
 		extraLabels: extraLabels,
+		style:       style,
+		nodeSorter:  makeNodeSorter(nodeSort),
 	}
 }
 
@@ -54,14 +61,15 @@ func (u *UIModel) Init() tea.Cmd {
 	return tickCmd()
 }
 
-var green = lipgloss.NewStyle().Foreground(lipgloss.Color("#04B575")).Render
-var yellow = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFFF00")).Render
-var red = lipgloss.NewStyle().Foreground(lipgloss.Color("#ff0000")).Render
-
 func (u *UIModel) View() string {
 	b := strings.Builder{}
 
 	stats := u.cluster.Stats()
+
+	sort.Slice(stats.Nodes, func(a, b int) bool {
+		return u.nodeSorter(stats.Nodes[a], stats.Nodes[b])
+	})
+
 	if stats.NumNodes == 0 {
 		return "Waiting for update or no nodes found..."
 	}
@@ -104,11 +112,12 @@ func (u *UIModel) writeNodeInfo(n *Node, w io.Writer, resources []v1.ResourceNam
 		}
 
 		if firstLine {
-			priceLabel := fmt.Sprintf("/$%0.3f", n.Price)
-			if n.Price != n.Price {
+			priceLabel := fmt.Sprintf("/$%0.3f", n.Price())
+			if !n.HasPrice() || u.DisablePricing {
 				priceLabel = ""
 			}
-			fmt.Fprintf(w, "%s\t%s\t%s\t(%d pods)\t%s%s", n.Name(), res, u.progress.ViewAs(pct), n.NumPods(), n.InstanceType(), priceLabel)
+			maxPods, _ := allocatable.Pods().AsInt64()
+			fmt.Fprintf(w, "%s\t%s\t%s\t(%d/%d pods)\t%s%s", n.Name(), res, u.progress.ViewAs(pct), n.NumPods(), maxPods, n.InstanceType(), priceLabel)
 
 			// node compute type
 			if n.IsOnDemand() {
@@ -134,7 +143,7 @@ func (u *UIModel) writeNodeInfo(n *Node, w io.Writer, resources []v1.ResourceNam
 			if n.Ready() {
 				fmt.Fprintf(w, "\tReady")
 			} else {
-				fmt.Fprintf(w, "\t%s", duration.HumanDuration(time.Since(n.Created())))
+				fmt.Fprintf(w, "\tNotReady/%s", duration.HumanDuration(time.Since(n.NotReadyTime())))
 			}
 
 			for _, label := range u.extraLabels {
@@ -169,16 +178,19 @@ func (u *UIModel) writeClusterSummary(resources []v1.ResourceName, stats Stats, 
 		}
 		pctUsedStr := fmt.Sprintf("%0.1f%%", pctUsed)
 		if pctUsed > 90 {
-			pctUsedStr = green(pctUsedStr)
+			pctUsedStr = u.style.green(pctUsedStr)
 		} else if pctUsed > 60 {
-			pctUsedStr = yellow(pctUsedStr)
+			pctUsedStr = u.style.yellow(pctUsedStr)
 		} else {
-			pctUsedStr = red(pctUsedStr)
+			pctUsedStr = u.style.red(pctUsedStr)
 		}
 
 		u.progress.ShowPercentage = false
 		monthlyPrice := stats.TotalPrice * (365 * 24) / 12 // average hours per month
 		clusterPrice := fmt.Sprintf("%0.3f/hour $%0.3f/month", stats.TotalPrice, monthlyPrice)
+		if u.DisablePricing {
+			clusterPrice = ""
+		}
 		if firstLine {
 			fmt.Fprintf(w, "%d nodes\t%s/%s\t%s\t%s\t%s\t%s\n",
 				stats.NumNodes, used.String(), allocatable.String(), pctUsedStr, res, u.progress.ViewAs(pctUsed/100.0), clusterPrice)
@@ -218,5 +230,43 @@ func (u *UIModel) SetResources(resources []string) {
 	u.cluster.resources = nil
 	for _, r := range resources {
 		u.cluster.resources = append(u.cluster.resources, v1.ResourceName(r))
+	}
+}
+
+// makeNodeSorter returns a less-than comparator for nodes based on a sort
+// specification. The spec is either 'creation' or a node label name, and can be
+// suffixed with '=asc' (default) or '=dsc' to control the sort direction.
+func makeNodeSorter(nodeSort string) func(lhs *Node, rhs *Node) bool {
+	sortOrder := func(b bool) bool { return b }
+	if trimmed, ok := strings.CutSuffix(nodeSort, "=asc"); ok {
+		nodeSort = trimmed
+	}
+	if trimmed, ok := strings.CutSuffix(nodeSort, "=dsc"); ok {
+		sortOrder = func(b bool) bool { return !b }
+		nodeSort = trimmed
+	}
+
+	if nodeSort == "creation" {
+		return func(lhs *Node, rhs *Node) bool {
+			if lhs.Created().Equal(rhs.Created()) {
+				return sortOrder(natsort.Compare(lhs.Name(), rhs.Name()))
+			}
+			return sortOrder(rhs.Created().Before(lhs.Created()))
+		}
+	}
+
+	return func(lhs *Node, rhs *Node) bool {
+		lhsLabel, ok := lhs.node.Labels[nodeSort]
+		if !ok {
+			lhsLabel = lhs.ComputeLabel(nodeSort)
+		}
+		rhsLabel, ok := rhs.node.Labels[nodeSort]
+		if !ok {
+			rhsLabel = rhs.ComputeLabel(nodeSort)
+		}
+		if lhsLabel == rhsLabel {
+			return sortOrder(natsort.Compare(lhs.Name(), rhs.Name()))
+		}
+		return sortOrder(natsort.Compare(lhsLabel, rhsLabel))
 	}
 }

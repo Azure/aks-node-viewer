@@ -67,18 +67,26 @@ func main() {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 
-	pprov := pricing.NewProvider(ctx, pricing.NewAPI(), "westus2")
-	updateStarted := time.Now()
-	for {
-		if pprov.OnDemandLastUpdated().After(updateStarted) {
-			break
-		}
-		log.Println("waiting on pricing update...")
-		time.Sleep(1 * time.Second)
+	style, err := model.ParseStyle(flags.Style)
+	if err != nil {
+		log.Fatalf("parsing style, %s", err)
 	}
-	m := model.NewUIModel(strings.Split(flags.ExtraLabels, ","))
-
+	m := model.NewUIModel(strings.Split(flags.ExtraLabels, ","), flags.NodeSort, style)
+	m.DisablePricing = flags.DisablePricing
 	m.SetResources(strings.FieldsFunc(flags.Resources, func(r rune) bool { return r == ',' }))
+
+	// The pricing provider starts with an embedded static price list so the UI renders
+	// immediately; live prices are fetched in the background and applied as they arrive.
+	pprov := pricing.NewProvider(ctx, pricing.NewAPI(), flags.Region)
+	if !flags.DisablePricing {
+		pprov.StartRefresh(ctx)
+		go func() {
+			// re-apply prices to nodes whenever fresh pricing data arrives
+			for range pprov.Watch() {
+				m.Cluster().UpdatePrices(pprov)
+			}
+		}()
+	}
 
 	var nodeSelector labels.Selector
 	if ns, err := labels.Parse(flags.NodeSelector); err != nil {

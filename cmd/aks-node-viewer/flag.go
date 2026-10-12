@@ -44,6 +44,9 @@ type Flags struct {
 	Context         string
 	NodeSelector    string
 	ExtraLabels     string
+	NodeSort        string
+	Style           string
+	Region          string
 	Kubeconfig      string
 	Resources       string
 	DisablePricing  bool
@@ -71,6 +74,15 @@ func ParseFlags() (Flags, error) {
 
 	extraLabelsDefault := cfg.getValue("extra-labels", "")
 	flagSet.StringVar(&flags.ExtraLabels, "extra-labels", extraLabelsDefault, "A comma separated set of extra node labels to display")
+
+	nodeSortDefault := cfg.getValue("node-sort", "creation=dsc")
+	flagSet.StringVar(&flags.NodeSort, "node-sort", nodeSortDefault, "Sort order for the nodes, either 'creation' or a label name. The sort order defaults to ascending and can be controlled by appending =asc or =dsc to the value.")
+
+	styleDefault := cfg.getValue("style", "#04B575,#FFFF00,#FF0000")
+	flagSet.StringVar(&flags.Style, "style", styleDefault, "Three comma separated colors to use for styling 'good', 'ok' and 'bad' values. The colors are also used in the gradients displayed from bad -> good.")
+
+	regionDefault := cfg.getValue("region", "westus2")
+	flagSet.StringVar(&flags.Region, "region", regionDefault, "Azure region to use for pricing lookups")
 
 	// flag overrides env. var. and env. var. overrides config file
 	kubeconfigDefault := getStringEnv("KUBECONFIG", cfg.getValue("kubeconfig", filepath.Join(homeDir, ".kube", "config")))

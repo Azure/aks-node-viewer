@@ -17,6 +17,30 @@ go install github.com/Azure/aks-node-viewer/cmd/aks-node-viewer@latest
 
 Note: This will install it to your `GOBIN` directory, typically `~/go/bin` if it is unconfigured.
 
+#### Nix
+
+A [Nix flake](./flake.nix) is included, so on NixOS (or any system with Nix installed) you can run
+the viewer without installing anything permanently:
+
+```shell
+# run directly from the repository
+nix run .
+# ...or from GitHub
+nix run github:Azure/aks-node-viewer
+
+# build and install into your profile
+nix profile install .
+```
+
+#### Development shell
+
+The flake provides a development shell with Go, goreleaser, golangci-lint and go-licenses:
+
+```shell
+nix develop
+# or, if you use direnv, .envrc already runs `use flake`
+```
+
 ## Usage
 ```shell
 Usage of ./aks-node-viewer:
@@ -32,8 +56,14 @@ Usage of ./aks-node-viewer:
     	Absolute path to the kubeconfig file (default "~/.kube/config")
   -node-selector string
     	Node label selector used to filter nodes, if empty all nodes are selected
+  -node-sort string
+    	Sort order for the nodes, either 'creation' or a label name. The sort order defaults to ascending and can be controlled by appending =asc or =dsc to the value. (default "creation=dsc")
+  -region string
+    	Azure region to use for pricing lookups (default "westus2")
   -resources string
-    	List of comma separated resources to monitor (default "cpu")
+    	List of comma separated resources to monitor (default "cpu,memory")
+  -style string
+    	Three colors to use for styling 'good', 'ok' and 'bad' values, e.g. "#04B575,#FFFF00,#FF0000"
   -v	Display aks-node-viewer version
   -version
     	Display aks-node-viewer version
@@ -43,19 +73,31 @@ Usage of ./aks-node-viewer:
 ```shell
 # Standard usage
 aks-node-viewer
-# Karenter nodes only
+# Karpenter nodes only
 aks-node-viewer --node-selector "karpenter.sh/provisioner-name"
 # Display both CPU and Memory Usage
 aks-node-viewer --resources cpu,memory
 # Display extra labels, i.e. AZ
 aks-node-viewer --extra-labels topology.kubernetes.io/zone
+# Sort nodes by CPU usage, ascending
+aks-node-viewer --node-sort cpu
+# Sort nodes newest first
+aks-node-viewer --node-sort creation=asc
+# Use a custom color scheme
+aks-node-viewer --style "#04B575,#FFFF00,#FF0000"
 ```
 
 ### Computed Labels
 
-`aks-node-viewer` supports some custom label names that can be passed to the `--extra-labels` to display additional node information. 
+`aks-node-viewer` supports some custom label names that can be passed to the `--extra-labels` to display additional node information. Both the `aks-node-viewer/` and `eks-node-viewer/` prefixes are accepted, so configs written for [eks-node-viewer](https://github.com/awslabs/eks-node-viewer) keep working.
 
-- `aks-node-viewer/node-age` - Age of the node
+- `<prefix>/node-age` - Age of the node
+- `<prefix>/node-cpu-usage` - CPU requests as a percentage of allocatable CPU
+- `<prefix>/node-memory-usage` - Memory requests as a percentage of allocatable memory
+- `<prefix>/node-pods-usage` - Pods scheduled as a percentage of the pod capacity
+- `<prefix>/node-ephemeral-storage-usage` - Ephemeral storage requests as a percentage of allocatable ephemeral storage
+
+where `<prefix>` is either `aks-node-viewer` or `eks-node-viewer`.
 
 ### Default Options
 You can supply default options to `aks-node-viewer` by creating a file named `.aks-node-viewer` in your home directory and specifying
@@ -77,6 +119,12 @@ $ make build
 Or local execution of GoReleaser build:
 ```shell
 $ make goreleaser
+```
+
+Or with Nix:
+```shell
+$ nix build
+$ ./result/bin/aks-node-viewer
 ```
 
 ### Source Attribution

@@ -15,7 +15,6 @@ limitations under the License.
 package model
 
 import (
-	"sort"
 	"sync"
 
 	v1 "k8s.io/api/core/v1"
@@ -70,6 +69,20 @@ func (c *Cluster) GetNode(name string) (*Node, bool) {
 	defer c.mu.RUnlock()
 	n, ok := c.nodes[name]
 	return n, ok
+}
+
+// UpdatePrices refreshes the price of every node from the pricing provider. This is
+// useful after the provider has loaded more current pricing data in the background.
+func (c *Cluster) UpdatePrices(pprov *pricing.Provider) {
+	c.mu.RLock()
+	nodes := make([]*Node, 0, len(c.nodes))
+	for _, n := range c.nodes {
+		nodes = append(nodes, n)
+	}
+	c.mu.RUnlock()
+	for _, n := range nodes {
+		n.UpdatePrice(pprov)
+	}
 }
 
 func (c *Cluster) AddPod(pod *Pod, pprov *pricing.Provider) (totalPods int) {
@@ -143,23 +156,14 @@ func (c *Cluster) Stats() Stats {
 		}
 		// only add the price if it's not NaN which is used to indicate an unknown
 		// price
-		if n.Price == n.Price {
-			st.TotalPrice += n.Price
+		if n.HasPrice() {
+			st.TotalPrice += n.Price()
 		}
 		st.NumNodes++
 		st.Nodes = append(st.Nodes, n)
 		addResources(st.AllocatableResources, n.Allocatable())
 		addResources(st.UsedResources, n.Used())
 	}
-
-	sort.Slice(st.Nodes, func(a, b int) bool {
-		aCreated := st.Nodes[a].Created()
-		bCreated := st.Nodes[b].Created()
-		if aCreated == bCreated {
-			return st.Nodes[a].Name() < st.Nodes[b].Name()
-		}
-		return st.Nodes[a].Created().Before(st.Nodes[b].Created())
-	})
 	return st
 }
 

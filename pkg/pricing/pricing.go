@@ -41,6 +41,9 @@ type Provider struct {
 	onDemandPrices     map[string]float64
 	spotUpdateTime     time.Time
 	spotPrices         map[string]float64
+
+	// watch is signalled (coalesced) whenever a pricing refresh completes
+	watch chan struct{}
 }
 
 type Err struct {
@@ -69,13 +72,32 @@ func NewProvider(ctx context.Context, pricing client.PricingAPI, region string) 
 		// default our spot pricing to the same as the on-demand pricing until a price update
 		spotPrices: staticPricing,
 		pricing:    pricing,
+		watch:      make(chan struct{}, 1),
 	}
+	return p
+}
 
+// StartRefresh begins loading live pricing data in the background. The provider is seeded
+// with a static price list, so the viewer can render immediately and prices are then
+// refreshed as data arrives. Consumers can use Watch() to react to completed refreshes.
+func (p *Provider) StartRefresh(ctx context.Context) {
 	go func() {
-		// perform an initial price update at startup
 		p.updatePricing(ctx)
 	}()
-	return p
+}
+
+// Watch returns a channel that receives a signal whenever pricing data has been
+// refreshed. Signals are coalesced: a refresh that completes while a previous signal
+// is still pending may not produce an additional signal.
+func (p *Provider) Watch() <-chan struct{} {
+	return p.watch
+}
+
+func (p *Provider) signalUpdate() {
+	select {
+	case p.watch <- struct{}{}:
+	default:
+	}
 }
 
 // InstanceTypes returns the list of all instance types for which either a price is known.
@@ -169,6 +191,7 @@ func (p *Provider) UpdateOnDemandPricing(ctx context.Context) *Err {
 
 	p.onDemandPrices = lo.Assign(onDemandPrices)
 	p.onDemandUpdateTime = time.Now()
+	p.signalUpdate()
 	return nil
 }
 
@@ -247,6 +270,7 @@ func (p *Provider) UpdateSpotPricing(ctx context.Context) *Err {
 
 	p.spotPrices = lo.Assign(spotPrices)
 	p.spotUpdateTime = time.Now()
+	p.signalUpdate()
 	return nil
 }
 

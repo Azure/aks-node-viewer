@@ -15,13 +15,22 @@ limitations under the License.
 package model
 
 import (
+	"fmt"
 	"math"
+	"regexp"
 	"sync"
 	"time"
 
 	"github.com/Azure/aks-node-viewer/pkg/pricing"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/duration"
+)
+
+var (
+	// nodeLabelPrefix matches both the aks-node-viewer and eks-node-viewer label prefixes so
+	// that configs written for either tool keep working.
+	nodeLabelPrefix     = "(?:aks|eks)-node-viewer"
+	resourceUsageLabels = regexp.MustCompile(nodeLabelPrefix + `/node-(.*?)-usage`)
 )
 
 type objectKey struct {
@@ -34,7 +43,7 @@ type Node struct {
 	node    v1.Node
 	pods    map[objectKey]*Pod
 	used    v1.ResourceList
-	Price   float64
+	price   float64
 }
 
 func NewNode(n *v1.Node) *Node {
@@ -120,7 +129,15 @@ func (n *Node) Used() v1.ResourceList {
 func (n *Node) Cordoned() bool {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
-	return n.node.Spec.Unschedulable
+	if n.node.Spec.Unschedulable {
+		return true
+	}
+	for _, taint := range n.node.Spec.Taints {
+		if taint.Key == "karpenter.sh/disruption" && taint.Effect == v1.TaintEffectNoSchedule {
+			return true
+		}
+	}
+	return false
 }
 
 func (n *Node) Ready() bool {
@@ -183,33 +200,95 @@ func (n *Node) Deleting() bool {
 
 func (n *Node) HasPrice() bool {
 	// we use NaN for an unknown price, so if this is true the price is known
-	return n.Price == n.Price
+	return n.Price() == n.Price()
+}
+
+// Price returns the last known price for the node. math.NaN() is used to
+// indicate that the price is unknown.
+func (n *Node) Price() float64 {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	return n.price
 }
 
 func (n *Node) UpdatePrice(pricing *pricing.Provider) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.lookupPriceLocked(pricing)
+}
+
+// lookupPriceLocked must be called with n.mu held
+func (n *Node) lookupPriceLocked(pprov *pricing.Provider) {
 	// lookup our n price
-	n.Price = math.NaN()
-	if n.IsOnDemand() {
-		if price, ok := pricing.OnDemandPrice(n.InstanceType()); ok {
-			n.Price = price
+	n.price = math.NaN()
+	instanceType := n.node.Labels[v1.LabelInstanceTypeStable]
+	if n.isOnDemandLocked() {
+		if price, ok := pprov.OnDemandPrice(instanceType); ok {
+			n.price = price
 		}
-	} else if n.IsSpot() {
-		if price, ok := pricing.SpotPrice(n.InstanceType()); ok {
-			n.Price = price
+	} else if n.isSpotLocked() {
+		if price, ok := pprov.SpotPrice(instanceType); ok {
+			n.price = price
 		}
-	// Use on-demand prices if no Karpenter label is found
+		// Use on-demand prices if no Karpenter label is found
 	} else {
-		if price, ok := pricing.OnDemandPrice(n.InstanceType()); ok {
-			n.Price = price
+		if price, ok := pprov.OnDemandPrice(instanceType); ok {
+			n.price = price
 		}
 	}
+}
+
+// isOnDemandLocked and isSpotLocked must be called with n.mu held
+func (n *Node) isOnDemandLocked() bool {
+	return n.node.Labels["karpenter.sh/capacity-type"] == "on-demand"
+}
+
+func (n *Node) isSpotLocked() bool {
+	return n.node.Labels["karpenter.sh/capacity-type"] == "spot"
 }
 
 // ComputeLabel computes dynamic labels
 func (n *Node) ComputeLabel(labelName string) string {
 	switch labelName {
-	case "aks-node-viewer/node-age":
+	case "aks-node-viewer/node-age", "eks-node-viewer/node-age":
 		return duration.HumanDuration(time.Since(n.Created()))
 	}
-	return labelName
+	// resource based custom labels, e.g. eks-node-viewer/node-cpu-usage
+	if match := resourceUsageLabels.FindStringSubmatch(labelName); len(match) > 0 {
+		return pctUsage(n.Allocatable(), n.Used(), match[1])
+	}
+	return "-"
+}
+
+// NotReadyTime is the time that the node went NotReady, or when it was created if it hasn't been marked as NotReady.
+func (n *Node) NotReadyTime() time.Time {
+	n.mu.RLock()
+	var notReadyTransitionTime time.Time
+	for _, c := range n.node.Status.Conditions {
+		if c.Type == v1.NodeReady && (c.Status == v1.ConditionFalse || c.Status == v1.ConditionUnknown) {
+			notReadyTransitionTime = c.LastTransitionTime.Time
+			break
+		}
+	}
+	n.mu.RUnlock()
+	if !notReadyTransitionTime.IsZero() {
+		return notReadyTransitionTime
+	}
+	return n.Created()
+}
+
+func pctUsage(allocatable v1.ResourceList, used v1.ResourceList, resource string) string {
+	allocRes, hasAlloc := allocatable[v1.ResourceName(resource)]
+	if !hasAlloc {
+		return "N/A"
+	}
+	usedRes, hasUsed := used[v1.ResourceName(resource)]
+	if !hasUsed || usedRes.AsApproximateFloat64() == 0 {
+		return "0%"
+	}
+	pctUsed := 0.0
+	if allocRes.AsApproximateFloat64() != 0 {
+		pctUsed = 100 * (usedRes.AsApproximateFloat64() / allocRes.AsApproximateFloat64())
+	}
+	return fmt.Sprintf("%.0f%%", pctUsed)
 }

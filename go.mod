@@ -1,12 +1,14 @@
 module github.com/Azure/aks-node-viewer
 
-go 1.19
+go 1.23.0
+
 toolchain go1.24.1
 
 require (
 	github.com/charmbracelet/bubbles v0.15.0
 	github.com/charmbracelet/bubbletea v0.23.2
 	github.com/charmbracelet/lipgloss v0.6.0
+	github.com/facette/natsort v0.0.0-20181210072756-2cd4dd1e2dcb
 	github.com/samber/lo v1.37.0
 	k8s.io/api v0.25.0
 	k8s.io/apimachinery v0.25.0
