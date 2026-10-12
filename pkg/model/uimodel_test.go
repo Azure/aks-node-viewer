@@ -132,6 +132,40 @@ func TestPricingNote(t *testing.T) {
 	}
 }
 
+func TestPricingNoteRegion(t *testing.T) {
+	style, err := ParseStyle("#04B575,#FFFF00,#FF0000")
+	if err != nil {
+		t.Fatalf("ParseStyle: %v", err)
+	}
+	u := NewUIModel(nil, "creation=dsc", style)
+	u.PricingStatus = func() pricing.Status {
+		return pricing.Status{Source: pricing.SourceLive, Updated: time.Now(), Region: "eastus"}
+	}
+
+	// the region the prices are for is always shown
+	if got := u.pricingNote(); !strings.Contains(got, "region eastus") {
+		t.Errorf("expected the region in the note, got %q", got)
+	}
+
+	// a mismatch with the cluster's nodes is surfaced
+	u.ClusterRegion = func() string { return "westus2" }
+	if got := u.pricingNote(); !strings.Contains(got, "nodes in westus2") {
+		t.Errorf("expected the cluster region in the note, got %q", got)
+	}
+
+	// no mismatch is reported when the cluster agrees
+	u.ClusterRegion = func() string { return "eastus" }
+	if got := u.pricingNote(); strings.Contains(got, "nodes in") {
+		t.Errorf("expected no mismatch in the note, got %q", got)
+	}
+
+	// no mismatch is reported before the cluster region is known
+	u.ClusterRegion = func() string { return "" }
+	if got := u.pricingNote(); strings.Contains(got, "nodes in") {
+		t.Errorf("expected no mismatch before the region is known, got %q", got)
+	}
+}
+
 func TestMakeNodeSorterByLabel(t *testing.T) {
 	az1 := nodeWithCreation("az1-node", time.Now().Add(-time.Hour))
 	az2 := nodeWithCreation("az2-node", time.Now().Add(-time.Hour))

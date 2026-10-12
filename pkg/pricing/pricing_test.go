@@ -75,7 +75,7 @@ func TestProviderLazyRefresh(t *testing.T) {
 		t.Errorf("expected static on-demand pricing to be available immediately")
 	}
 
-	pprov.StartRefresh(context.Background())
+	pprov.Refresh(context.Background())
 
 	deadline := time.Now().Add(5 * time.Second)
 	var onDemand, spot, replaced float64
@@ -107,9 +107,139 @@ func TestProviderStaticWithoutRefresh(t *testing.T) {
 	if price, ok := pprov.OnDemandPrice("Basic_A0"); !ok || price <= 0 {
 		t.Errorf("expected static pricing fallback, got price=%v ok=%v", price, ok)
 	}
-	// without StartRefresh, live prices must never replace the static ones
+	// without Refresh, live prices must never replace the static ones
 	time.Sleep(200 * time.Millisecond)
 	if _, ok := pprov.OnDemandPrice("Magic_Instance_9"); ok {
-		t.Errorf("expected live prices to remain unloaded without StartRefresh")
+		t.Errorf("expected live prices to remain unloaded without Refresh")
+	}
+}
+
+func TestProviderSetRegion(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+
+	cachedTime := time.Now().Add(-time.Hour).UTC().Truncate(time.Second)
+	if err := writeCache(&cacheData{
+		Region:             "eastus",
+		OnDemandUpdateTime: cachedTime,
+		OnDemandPrices:     map[string]float64{"Cached_Instance": 1.5},
+		SpotUpdateTime:     cachedTime,
+		SpotPrices:         map[string]float64{"Cached_Instance": 0.75},
+	}); err != nil {
+		t.Fatalf("writeCache: %v", err)
+	}
+
+	pprov := NewProvider(context.Background(), &fakePricingAPI{}, "westus2")
+	if got := pprov.Region(); got != "westus2" {
+		t.Fatalf("expected region westus2, got %q", got)
+	}
+	if got := pprov.Status().Region; got != "westus2" {
+		t.Errorf("expected the status to report the region, got %q", got)
+	}
+
+	// switching to a region with a cache reseeds the prices from it
+	if !pprov.SetRegion("eastus") {
+		t.Fatalf("expected SetRegion to report a change")
+	}
+	if got := pprov.Region(); got != "eastus" {
+		t.Errorf("expected region eastus, got %q", got)
+	}
+	if price, ok := pprov.OnDemandPrice("Cached_Instance"); !ok || price != 1.5 {
+		t.Errorf("expected the cached on-demand price, got price=%v ok=%v", price, ok)
+	}
+	if price, ok := pprov.SpotPrice("Cached_Instance"); !ok || price != 0.75 {
+		t.Errorf("expected the cached spot price, got price=%v ok=%v", price, ok)
+	}
+	if got := pprov.Status().Source; got != SourceCache {
+		t.Errorf("expected the source to be SourceCache, got %v", got)
+	}
+
+	// no change is reported for the same region or an empty one
+	if pprov.SetRegion("eastus") {
+		t.Errorf("expected no change for the same region")
+	}
+	if pprov.SetRegion("") {
+		t.Errorf("expected no change for an empty region")
+	}
+}
+
+// gatedPricingAPI blocks fetches for one region until the gate is closed, so a
+// test can change the provider's region while a refresh is in flight.
+type gatedPricingAPI struct {
+	blockRegion  string
+	gate         chan struct{}
+	started      chan string
+	regionPrices map[string]float64
+}
+
+func (g *gatedPricingAPI) GetProductsPricePages(ctx context.Context, filters []*client.Filter, pageHandler func(output *client.ProductsPricePage)) error {
+	region := ""
+	for _, f := range filters {
+		if f.Field == "armRegionName" {
+			region = f.Value
+		}
+	}
+	g.started <- region
+	if region == g.blockRegion {
+		<-g.gate
+	}
+	pageHandler(&client.ProductsPricePage{Items: []client.Item{{
+		ProductName: "Virtual Machines Test",
+		MeterName:   "Test",
+		SkuName:     "Test",
+		ArmSkuName:  "Instance",
+		RetailPrice: g.regionPrices[region],
+	}}})
+	return nil
+}
+
+func TestProviderRegionChangeWhileRefreshing(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+
+	api := &gatedPricingAPI{
+		blockRegion:  "region-a",
+		gate:         make(chan struct{}),
+		started:      make(chan string, 16),
+		regionPrices: map[string]float64{"region-a": 1.0, "region-b": 2.0},
+	}
+	pprov := NewProvider(context.Background(), api, "region-a")
+	pprov.Refresh(context.Background())
+
+	// wait until the region-a fetch is in flight and blocked
+	waitForFetch(t, api.started, "region-a")
+
+	// change the region while that refresh is still in flight
+	if !pprov.SetRegion("region-b") {
+		t.Fatalf("expected the region to change")
+	}
+	pprov.Refresh(context.Background())
+
+	// release the in-flight region-a fetch: its results must be discarded and
+	// the follow-up region-b refresh must win
+	close(api.gate)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if price, ok := pprov.OnDemandPrice("Instance"); ok && price == 2.0 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	price, ok := pprov.OnDemandPrice("Instance")
+	t.Fatalf("timed out waiting for the region-b price: price=%v ok=%v region=%q", price, ok, pprov.Region())
+}
+
+// waitForFetch waits until the pricing API is asked for the given region.
+func waitForFetch(t *testing.T, started <-chan string, region string) {
+	t.Helper()
+	timeout := time.After(5 * time.Second)
+	for {
+		select {
+		case got := <-started:
+			if got == region {
+				return
+			}
+		case <-timeout:
+			t.Fatalf("timed out waiting for a %s fetch", region)
+		}
 	}
 }

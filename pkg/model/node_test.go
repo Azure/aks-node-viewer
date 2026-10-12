@@ -91,6 +91,18 @@ func TestNodeTypeSpot(t *testing.T) {
 	}
 }
 
+func TestNodeRegion(t *testing.T) {
+	n := testNode("mynode")
+	if got := model.NewNode(n).Region(); got != "" {
+		t.Errorf("expected no region without the label, got %q", got)
+	}
+
+	n.Labels = map[string]string{"topology.kubernetes.io/region": "eastus"}
+	if got := model.NewNode(n).Region(); got != "eastus" {
+		t.Errorf("expected the node region, got %q", got)
+	}
+}
+
 func TestComputeLabel(t *testing.T) {
 	n := &v1.Node{
 		ObjectMeta: metav1.ObjectMeta{

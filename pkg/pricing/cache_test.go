@@ -109,7 +109,7 @@ func TestProviderSeedsFromCache(t *testing.T) {
 		t.Errorf("expected the status update time to be %v, got %v", cachedTime, status.Updated)
 	}
 	if status.Updating {
-		t.Errorf("expected Updating to be false before StartRefresh")
+		t.Errorf("expected Updating to be false before Refresh")
 	}
 }
 

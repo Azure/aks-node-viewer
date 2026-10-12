@@ -90,8 +90,8 @@ func ParseFlags() (Flags, error) {
 	styleDefault := cfg.getValue("style", "#04B575,#FFFF00,#FF0000")
 	flagSet.StringVar(&flags.Style, "style", styleDefault, "Three comma separated colors to use for styling 'good', 'ok' and 'bad' values. The colors are also used in the gradients displayed from bad -> good.")
 
-	regionDefault := cfg.getValue("region", "westus2")
-	flagSet.StringVar(&flags.Region, "region", regionDefault, "Azure region to use for pricing lookups")
+	regionDefault := cfg.getValue("region", "")
+	flagSet.StringVar(&flags.Region, "region", regionDefault, "Azure region to use for pricing lookups. When empty the region is detected from the cluster's nodes.")
 
 	// flag overrides env. var. and env. var. overrides config file
 	kubeconfigDefault := getStringEnv("KUBECONFIG", cfg.getValue("kubeconfig", filepath.Join(homeDir, ".kube", "config")))

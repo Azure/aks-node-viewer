@@ -173,6 +173,14 @@ func (n *Node) Zone() string {
 	return n.node.Labels[v1.LabelTopologyZone]
 }
 
+// Region returns the Azure region the node runs in, from the standard
+// topology.kubernetes.io/region label, or "" when the label is not set.
+func (n *Node) Region() string {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	return n.node.Labels[v1.LabelTopologyRegion]
+}
+
 func (n *Node) NumPods() int {
 	n.mu.RLock()
 	defer n.mu.RUnlock()

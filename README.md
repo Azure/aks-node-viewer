@@ -59,7 +59,7 @@ Usage of ./aks-node-viewer:
   -node-sort string
     	Sort order for the nodes, either 'creation' or a label name. The sort order defaults to ascending and can be controlled by appending =asc or =dsc to the value. (default "creation=dsc")
   -region string
-    	Azure region to use for pricing lookups (default "westus2")
+    	Azure region to use for pricing lookups. When empty the region is detected from the cluster's nodes.
   -resources string
     	List of comma separated resources to monitor (default "cpu,memory")
   -style string
@@ -140,11 +140,19 @@ directory:
 ${XDG_CACHE_HOME:-~/.cache}/aks-node-viewer/pricing-<region>.json
 ```
 
-The cluster summary shows where the displayed prices came from and when they were
-last updated, so it is obvious when they are stale, e.g.:
+Prices are looked up for a single Azure region. Unless `-region` is set, the
+region is taken from the cluster's nodes (their
+`topology.kubernetes.io/region` label), so a cluster outside the default region
+is still priced correctly. An explicitly configured region always wins; if it
+does not match the region the nodes are in, the summary says so. When no node
+reports a region the embedded snapshot's region (eastus) is used.
+
+The cluster summary shows where the displayed prices came from, which region
+they are for and when they were last updated, so it is obvious when they are
+stale, e.g.:
 
 ```text
-10 nodes  24/96  25.0%  cpu  ...  12.345/hour $9,001.234/month (prices updated 2026-10-12 15:04)
+10 nodes  24/96  25.0%  cpu  ...  12.345/hour $9,001.234/month (prices updated 2026-10-12 15:04, region eastus)
 ```
 
 When nodes are running on spot capacity, the total saving versus running them
@@ -152,7 +160,14 @@ on-demand is shown next to the total price, as an hourly amount and the share of
 the equivalent on-demand cost:
 
 ```text
-10 nodes  24/96  25.0%  cpu  ...  1.330/hour $970.900/month saved $0.250/hour (18%) (prices updated 2026-10-12 15:04)
+10 nodes  24/96  25.0%  cpu  ...  1.330/hour $970.900/month saved $0.250/hour (18%) (prices updated 2026-10-12 15:04, region eastus)
+```
+
+With an explicit `-region` that differs from the cluster's region the note makes
+the mismatch visible:
+
+```text
+... saved $0.250/hour (18%) (prices updated 2026-10-12 15:04, region westus2, nodes in eastus)
 ```
 
 The per-node figure can be added as a column with
@@ -160,10 +175,10 @@ The per-node figure can be added as a column with
 on-demand price dimmed (a reference, not the node's cost) followed by the
 percentage saved, for example `$0.100 50%`:
 
-While a background refresh is in flight the note ends with `, refreshing`. If no
+While a background refresh is in flight the note includes `, refreshing`. If no
 live prices could be fetched the note makes that explicit, for example
-`(prices not updated since 2023-03-01)` or
-`(prices cached 2026-10-11 09:00 (1d ago))`.
+`(prices not updated since 2023-03-01, region eastus)` or
+`(prices cached 2026-10-11 09:00 (1d ago), region eastus)`.
 
 ### Building
 

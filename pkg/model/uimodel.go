@@ -44,6 +44,10 @@ type UIModel struct {
 	// PricingStatus, when set, reports the freshness of the pricing data in use
 	// and is displayed next to the cluster price.
 	PricingStatus func() pricing.Status
+	// ClusterRegion, when set, returns the Azure region reported by the
+	// cluster's nodes (empty until one is observed). It is compared against the
+	// region the prices are for so a mismatch is surfaced in the UI.
+	ClusterRegion func() string
 }
 
 func NewUIModel(extraLabels []string, nodeSort string, style *Style) *UIModel {
@@ -263,6 +267,16 @@ func (u *UIModel) pricingNote() string {
 	}
 	if st.Updating {
 		note += ", refreshing"
+	}
+	if st.Region != "" {
+		note += ", region " + st.Region
+	}
+	// A mismatch means prices are being looked up for a region other than the
+	// one the nodes are in, which happens when --region was set explicitly.
+	if u.ClusterRegion != nil {
+		if clusterRegion := u.ClusterRegion(); clusterRegion != "" && clusterRegion != st.Region {
+			note += ", nodes in " + clusterRegion
+		}
 	}
 	return "(" + note + ")"
 }

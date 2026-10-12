@@ -52,6 +52,11 @@ func (s Source) String() string {
 	}
 }
 
+// DefaultRegion is used for pricing lookups when no region is configured and
+// the cluster's region cannot (yet) be determined from its nodes. The embedded
+// static price snapshot only contains eastus prices.
+const DefaultRegion = "eastus"
+
 // Status describes the freshness of the pricing data currently in use.
 type Status struct {
 	// Source is where the current pricing data came from.
@@ -60,6 +65,8 @@ type Status struct {
 	Updated time.Time
 	// Updating is true while a live refresh is in flight.
 	Updating bool
+	// Region is the Azure region the prices were looked up for.
+	Region string
 }
 
 // Provider provides actual pricing data to the Azure cloud provider to allow it to make more informed decisions
@@ -75,6 +82,7 @@ type Provider struct {
 	mu                 sync.RWMutex
 	source             Source
 	updating           bool
+	refreshPending     bool
 	statusUpdated      time.Time
 	onDemandUpdateTime time.Time
 	onDemandPrices     map[string]float64
@@ -100,6 +108,18 @@ func NewAPI() client.PricingAPI {
 }
 
 func NewProvider(ctx context.Context, pricing client.PricingAPI, region string) *Provider {
+	p := &Provider{
+		pricing: pricing,
+		watch:   make(chan struct{}, 1),
+	}
+	p.seedLocked(region)
+	return p
+}
+
+// seedLocked initialises the prices for a region from the cache written by a
+// previous run, falling back to the embedded static snapshot. It must be called
+// with p.mu held.
+func (p *Provider) seedLocked(region string) {
 	// see if we've got region specific pricing data
 	staticPricing, ok := initialOnDemandPrices[region]
 	if !ok {
@@ -107,18 +127,14 @@ func NewProvider(ctx context.Context, pricing client.PricingAPI, region string) 
 		staticPricing = initialOnDemandPrices["eastus"]
 	}
 
-	p := &Provider{
-		region:             region,
-		source:             SourceStatic,
-		statusUpdated:      initialPriceUpdate,
-		onDemandUpdateTime: initialPriceUpdate,
-		onDemandPrices:     staticPricing,
-		spotUpdateTime:     initialPriceUpdate,
-		// default our spot pricing to the same as the on-demand pricing until a price update
-		spotPrices: staticPricing,
-		pricing:    pricing,
-		watch:      make(chan struct{}, 1),
-	}
+	p.region = region
+	p.source = SourceStatic
+	p.statusUpdated = initialPriceUpdate
+	p.onDemandUpdateTime = initialPriceUpdate
+	p.onDemandPrices = staticPricing
+	p.spotUpdateTime = initialPriceUpdate
+	// default our spot pricing to the same as the on-demand pricing until a price update
+	p.spotPrices = staticPricing
 
 	// Prefer pricing persisted by a previous run over the embedded static
 	// snapshot: it gives a much more accurate baseline while the live refresh
@@ -138,7 +154,33 @@ func NewProvider(ctx context.Context, pricing client.PricingAPI, region string) 
 			}
 		}
 	}
-	return p
+}
+
+// SetRegion changes the region used for pricing lookups and reseeds the
+// provider from that region's cache (or the embedded static snapshot). It
+// reports whether the region changed; call Refresh to fetch live prices for the
+// new region. Prices already fetched for the previous region stay in effect
+// until the refresh completes.
+func (p *Provider) SetRegion(region string) bool {
+	if region == "" {
+		return false
+	}
+	p.mu.Lock()
+	if region == p.region {
+		p.mu.Unlock()
+		return false
+	}
+	p.seedLocked(region)
+	p.mu.Unlock()
+	p.signalUpdate()
+	return true
+}
+
+// Region returns the region prices are currently looked up for.
+func (p *Provider) Region() string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.region
 }
 
 // Status reports the freshness of the pricing data currently in use.
@@ -149,13 +191,8 @@ func (p *Provider) Status() Status {
 		Source:   p.source,
 		Updated:  p.statusUpdated,
 		Updating: p.updating,
+		Region:   p.region,
 	}
-}
-
-func (p *Provider) setUpdating(updating bool) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.updating = updating
 }
 
 // persistCache writes the current pricing data to the XDG cache directory so
@@ -176,13 +213,41 @@ func (p *Provider) persistCache() {
 	_ = writeCache(data)
 }
 
-// StartRefresh begins loading live pricing data in the background. The provider is seeded
-// with a static price list, so the viewer can render immediately and prices are then
-// refreshed as data arrives. Consumers can use Watch() to react to completed refreshes.
-func (p *Provider) StartRefresh(ctx context.Context) {
-	go func() {
+// Refresh starts loading live pricing data for the current region in the
+// background. It returns immediately: until the refresh completes the provider
+// keeps serving whatever prices it already has, so the UI is never blocked.
+// Consumers can use Watch to react to completed refreshes.
+//
+// At most one refresh runs at a time. A request that arrives while a refresh is
+// in flight is coalesced into a follow-up refresh, so a region change made
+// mid-refresh is still fetched (and the results of the in-flight refresh for the
+// old region are discarded).
+func (p *Provider) Refresh(ctx context.Context) {
+	p.mu.Lock()
+	if p.updating {
+		p.refreshPending = true
+		p.mu.Unlock()
+		return
+	}
+	p.updating = true
+	p.mu.Unlock()
+	go p.refreshLoop(ctx)
+}
+
+func (p *Provider) refreshLoop(ctx context.Context) {
+	for {
 		p.updatePricing(ctx)
-	}()
+
+		p.mu.Lock()
+		if p.refreshPending {
+			p.refreshPending = false
+			p.mu.Unlock()
+			continue
+		}
+		p.updating = false
+		p.mu.Unlock()
+		return
+	}
 }
 
 // Watch returns a channel that receives a signal whenever pricing data has been
@@ -245,31 +310,35 @@ func (p *Provider) SpotPrice(instanceType string) (float64, bool) {
 }
 
 func (p *Provider) updatePricing(ctx context.Context) {
-	p.setUpdating(true)
-	defer p.setUpdating(false)
+	// Snapshot the region so a SetRegion during the fetch cannot mix prices from
+	// two regions in a single update.
+	region := p.Region()
 
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		if err := p.UpdateOnDemandPricing(ctx); err != nil {
-		}
+		_ = p.updateOnDemandPricing(ctx, region)
 	}()
 
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		if err := p.UpdateSpotPricing(ctx); err != nil {
-		}
+		_ = p.updateSpotPricing(ctx, region)
 	}()
 
 	wg.Wait()
 }
 
+// UpdateOnDemandPricing fetches the on-demand prices for the current region.
 func (p *Provider) UpdateOnDemandPricing(ctx context.Context) *Err {
+	return p.updateOnDemandPricing(ctx, p.Region())
+}
+
+func (p *Provider) updateOnDemandPricing(ctx context.Context, region string) *Err {
 	// standard on-demand instances
 	onDemandPrices := map[string]float64{}
-	if err := p.fetchPricing(ctx, onDemandPage(onDemandPrices)); err != nil {
+	if err := p.fetchPricing(ctx, region, onDemandPage(onDemandPrices)); err != nil {
 		return &Err{error: err, lastUpdateTime: p.OnDemandLastUpdated()}
 	}
 
@@ -278,6 +347,12 @@ func (p *Provider) UpdateOnDemandPricing(ctx context.Context) *Err {
 	}
 
 	p.mu.Lock()
+	if region != p.region {
+		// the region changed while we were fetching; the follow-up refresh will
+		// fetch the new region, so drop these results
+		p.mu.Unlock()
+		return nil
+	}
 	p.onDemandPrices = lo.Assign(onDemandPrices)
 	p.onDemandUpdateTime = time.Now()
 	p.source = SourceLive
@@ -289,7 +364,7 @@ func (p *Provider) UpdateOnDemandPricing(ctx context.Context) *Err {
 	return nil
 }
 
-func (p *Provider) fetchPricing(ctx context.Context, pageHandler func(output *client.ProductsPricePage)) error {
+func (p *Provider) fetchPricing(ctx context.Context, region string, pageHandler func(output *client.ProductsPricePage)) error {
 	filters := []*client.Filter{
 		{
 			Field:    "priceType",
@@ -314,7 +389,7 @@ func (p *Provider) fetchPricing(ctx context.Context, pageHandler func(output *cl
 		{
 			Field:    "armRegionName",
 			Operator: client.Equals,
-			Value:    p.region,
+			Value:    region,
 		}}
 	return p.pricing.GetProductsPricePages(ctx, filters, pageHandler)
 }
@@ -337,10 +412,15 @@ func onDemandPage(prices map[string]float64) func(page *client.ProductsPricePage
 	}
 }
 
+// UpdateSpotPricing fetches the spot prices for the current region.
 func (p *Provider) UpdateSpotPricing(ctx context.Context) *Err {
+	return p.updateSpotPricing(ctx, p.Region())
+}
+
+func (p *Provider) updateSpotPricing(ctx context.Context, region string) *Err {
 	// standard on-demand instances
 	spotPrices := map[string]float64{}
-	if err := p.fetchPricing(ctx, spotPage(spotPrices)); err != nil {
+	if err := p.fetchPricing(ctx, region, spotPage(spotPrices)); err != nil {
 		return &Err{error: err, lastUpdateTime: p.SpotLastUpdated()}
 	}
 
@@ -349,6 +429,12 @@ func (p *Provider) UpdateSpotPricing(ctx context.Context) *Err {
 	}
 
 	p.mu.Lock()
+	if region != p.region {
+		// the region changed while we were fetching; the follow-up refresh will
+		// fetch the new region, so drop these results
+		p.mu.Unlock()
+		return nil
+	}
 	p.spotPrices = lo.Assign(spotPrices)
 	p.spotUpdateTime = time.Now()
 	p.source = SourceLive
