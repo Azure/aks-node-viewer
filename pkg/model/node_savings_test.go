@@ -19,6 +19,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/lipgloss"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -51,8 +52,10 @@ func TestSpotSavings(t *testing.T) {
 	if got, want := spot.SpotSavings(), 0.050; math.Abs(got-want) > 1e-9 {
 		t.Errorf("expected savings %v, got %v", want, got)
 	}
+	// the label shows the on-demand price as a reference followed by the
+	// percentage saved
 	for _, label := range []string{"aks-node-viewer/node-spot-savings", "eks-node-viewer/node-spot-savings"} {
-		if got, want := spot.ComputeLabel(label), "$0.050"; got != want {
+		if got, want := spot.ComputeLabel(label), "$0.100 50%"; got != want {
 			t.Errorf("expected %s to be %q, got %q", label, want, got)
 		}
 	}
@@ -79,6 +82,36 @@ func TestSpotSavings(t *testing.T) {
 	}
 	if got, want := unknown.ComputeLabel("eks-node-viewer/node-spot-savings"), "-"; got != want {
 		t.Errorf("expected %q for unknown prices, got %q", want, got)
+	}
+}
+
+func TestSpotSavingsReferenceIsDimmed(t *testing.T) {
+	prev := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(2) // force ANSI256 so styles emit escape codes
+	defer lipgloss.SetColorProfile(prev)
+
+	style, err := ParseStyle("#04B575,#FFFF00,#FF0000")
+	if err != nil {
+		t.Fatalf("ParseStyle: %v", err)
+	}
+	u := NewUIModel([]string{"aks-node-viewer/node-spot-savings"}, "creation=dsc", style)
+	u.SetResources([]string{"cpu"})
+
+	spot := nodeWithCapacity("spot-1")
+	setCapacity(spot, "spot")
+	spot.price = 0.050
+	spot.onDemandPrice = 0.100
+	spot.Show()
+	u.Cluster().AddNode(spot)
+
+	out := u.View()
+	// the on-demand price is rendered dim (SGR 2) as it is only a reference...
+	if !strings.Contains(out, "\x1b[2m$0.100") {
+		t.Errorf("expected the on-demand reference to be dimmed, got:\n%q", out)
+	}
+	// ...while the savings percentage keeps the regular color
+	if !strings.Contains(out, "50%") {
+		t.Errorf("expected the savings percentage in the spot column, got:\n%q", out)
 	}
 }
 

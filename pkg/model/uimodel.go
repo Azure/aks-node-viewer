@@ -151,12 +151,7 @@ func (u *UIModel) writeNodeInfo(n *Node, w io.Writer, resources []v1.ResourceNam
 			}
 
 			for _, label := range u.extraLabels {
-				labelValue, ok := n.node.Labels[label]
-				if !ok {
-					// support computed label values
-					labelValue = n.ComputeLabel(label)
-				}
-				fmt.Fprintf(w, "\t%s", labelValue)
+				fmt.Fprintf(w, "\t%s", u.formatLabelValue(n, label))
 			}
 
 		} else {
@@ -215,6 +210,24 @@ func (u *UIModel) writeClusterSummary(resources []v1.ResourceName, stats Stats, 
 		}
 		firstLine = false
 	}
+}
+
+// formatLabelValue resolves the display value for an extra label. Node labels
+// are shown verbatim and computed labels are resolved through the node. The
+// spot savings label is special-cased so its on-demand price is dimmed, making
+// it clear that the value is only a reference and not the node's cost.
+func (u *UIModel) formatLabelValue(n *Node, label string) string {
+	if value, ok := n.node.Labels[label]; ok {
+		return value
+	}
+	switch label {
+	case "aks-node-viewer/node-spot-savings", "eks-node-viewer/node-spot-savings":
+		if reference, pct, ok := n.SpotSavingsReference(); ok {
+			return fmt.Sprintf("%s %d%%", u.style.dim(reference), pct)
+		}
+		return "-"
+	}
+	return n.ComputeLabel(label)
 }
 
 // spotSavingsNote describes the hourly saving achieved by running nodes on spot

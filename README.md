@@ -92,7 +92,7 @@ aks-node-viewer --style "#04B575,#FFFF00,#FF0000"
 `aks-node-viewer` supports some custom label names that can be passed to the `--extra-labels` to display additional node information. Both the `aks-node-viewer/` and `eks-node-viewer/` prefixes are accepted, so configs written for [eks-node-viewer](https://github.com/awslabs/eks-node-viewer) keep working.
 
 - `<prefix>/node-age` - Age of the node
-- `<prefix>/node-spot-savings` - Hourly saving of a spot node compared to its on-demand price (`-` for on-demand nodes or when a price is unknown)
+- `<prefix>/node-spot-savings` - For a spot node, the on-demand price shown dimmed as a reference followed by the percentage saved, e.g. `$0.100 50%` (`-` for on-demand nodes or when a price is unknown)
 - `<prefix>/node-cpu-usage` - CPU requests as a percentage of allocatable CPU
 - `<prefix>/node-memory-usage` - Memory requests as a percentage of allocatable memory
 - `<prefix>/node-pods-usage` - Pods scheduled as a percentage of the pod capacity
@@ -155,8 +155,10 @@ the equivalent on-demand cost:
 10 nodes  24/96  25.0%  cpu  ...  1.330/hour $970.900/month saved $0.250/hour (18%) (prices updated 2026-10-12 15:04)
 ```
 
-The per-node saving can be added as a column with
-`--extra-labels aks-node-viewer/node-spot-savings`.
+The per-node figure can be added as a column with
+`--extra-labels aks-node-viewer/node-spot-savings`. For a spot node it shows the
+on-demand price dimmed (a reference, not the node's cost) followed by the
+percentage saved, for example `$0.100 50%`:
 
 While a background refresh is in flight the note ends with `, refreshing`. If no
 live prices could be fetched the note makes that explicit, for example

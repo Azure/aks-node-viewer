@@ -29,6 +29,7 @@ type Style struct {
 	green    func(str string) string
 	yellow   func(str string) string
 	red      func(str string) string
+	dim      func(str string) string
 	gradient progress.Option
 }
 
@@ -42,6 +43,7 @@ func ParseStyle(style string) (*Style, error) {
 	s.green = lipgloss.NewStyle().Foreground(lipgloss.Color(colors[0])).Render
 	s.yellow = lipgloss.NewStyle().Foreground(lipgloss.Color(colors[1])).Render
 	s.red = lipgloss.NewStyle().Foreground(lipgloss.Color(colors[2])).Render
+	s.dim = lipgloss.NewStyle().Faint(true).Render
 
 	s.gradient = progress.WithGradient(colors[2], colors[0])
 	return s, nil

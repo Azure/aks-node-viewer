@@ -222,6 +222,20 @@ func (n *Node) SpotSavings() float64 {
 	return 0
 }
 
+// SpotSavingsReference returns the on-demand price of a spot node (rendered for
+// display) and the percentage saved by running it on spot instead. The
+// on-demand price is only a reference: it is not what the node costs. ok is
+// false for nodes that are not on spot or whose prices are unknown.
+func (n *Node) SpotSavingsReference() (reference string, pct int, ok bool) {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	if !n.isSpotLocked() || math.IsNaN(n.price) || math.IsNaN(n.onDemandPrice) || n.onDemandPrice <= 0 {
+		return "", 0, false
+	}
+	pct = int(math.Round(100 * (n.onDemandPrice - n.price) / n.onDemandPrice))
+	return fmt.Sprintf("$%0.3f", n.onDemandPrice), pct, true
+}
+
 // Price returns the last known price for the node. math.NaN() is used to
 // indicate that the price is unknown.
 func (n *Node) Price() float64 {
@@ -275,8 +289,8 @@ func (n *Node) ComputeLabel(labelName string) string {
 	case "aks-node-viewer/node-age", "eks-node-viewer/node-age":
 		return duration.HumanDuration(time.Since(n.Created()))
 	case "aks-node-viewer/node-spot-savings", "eks-node-viewer/node-spot-savings":
-		if savings := n.SpotSavings(); savings > 0 {
-			return fmt.Sprintf("$%0.3f", savings)
+		if reference, pct, ok := n.SpotSavingsReference(); ok {
+			return fmt.Sprintf("%s %d%%", reference, pct)
 		}
 		return "-"
 	}
