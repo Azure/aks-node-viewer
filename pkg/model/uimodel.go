@@ -116,12 +116,12 @@ func (u *UIModel) writeNodeInfo(n *Node, w io.Writer, resources []v1.ResourceNam
 		}
 
 		if firstLine {
-			priceLabel := fmt.Sprintf("/$%0.3f", n.Price())
-			if !n.HasPrice() || u.DisablePricing {
-				priceLabel = ""
+			priceLabel := ""
+			if n.HasPrice() && !u.DisablePricing {
+				priceLabel = fmt.Sprintf("$%0.3f", n.Price())
 			}
 			maxPods, _ := allocatable.Pods().AsInt64()
-			fmt.Fprintf(w, "%s\t%s\t%s\t(%d/%d pods)\t%s%s", n.Name(), res, u.progress.ViewAs(pct), n.NumPods(), maxPods, n.InstanceType(), priceLabel)
+			fmt.Fprintf(w, "%s\t%s\t%s\t(%d/%d pods)\t%s\t%s", n.Name(), res, u.progress.ViewAs(pct), n.NumPods(), maxPods, n.InstanceType(), priceLabel)
 
 			// node compute type
 			if n.IsOnDemand() {
@@ -160,7 +160,7 @@ func (u *UIModel) writeNodeInfo(n *Node, w io.Writer, resources []v1.ResourceNam
 			}
 
 		} else {
-			fmt.Fprintf(w, " \t%s\t%s\t\t\t\t\t", res, u.progress.ViewAs(pct))
+			fmt.Fprintf(w, " \t%s\t%s\t\t\t\t\t\t", res, u.progress.ViewAs(pct))
 			for range u.extraLabels {
 				fmt.Fprintf(w, "\t")
 			}

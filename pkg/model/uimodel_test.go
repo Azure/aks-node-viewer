@@ -20,6 +20,7 @@ import (
 	"time"
 
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/Azure/aks-node-viewer/pkg/pricing"
@@ -51,6 +52,40 @@ func TestMakeNodeSorterCreation(t *testing.T) {
 	}
 	if dsc(newer, older) {
 		t.Errorf("expected 'creation=dsc' to not sort newer before older")
+	}
+}
+
+func TestNodeRowPriceIsSeparateColumn(t *testing.T) {
+	style, err := ParseStyle("#04B575,#FFFF00,#FF0000")
+	if err != nil {
+		t.Fatalf("ParseStyle: %v", err)
+	}
+	u := NewUIModel(nil, "creation=dsc", style)
+	u.SetResources([]string{"cpu"})
+
+	n := NewNode(&v1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: "node-1"},
+		Status: v1.NodeStatus{
+			Allocatable: v1.ResourceList{
+				v1.ResourceCPU:  resource.MustParse("2"),
+				v1.ResourcePods: resource.MustParse("110"),
+			},
+		},
+	})
+	n.node.Labels = map[string]string{v1.LabelInstanceTypeStable: "Standard_D2s_v3"}
+	n.price = 0.096
+	n.Show()
+	u.Cluster().AddNode(n)
+
+	out := u.View()
+
+	// the price must be its own column, separated from the instance type by
+	// padding rather than glued on with a slash
+	if !strings.Contains(out, "Standard_D2s_v3 $0.096") {
+		t.Errorf("expected the price to be its own column, got:\n%s", out)
+	}
+	if strings.Contains(out, "Standard_D2s_v3/") {
+		t.Errorf("expected the price not to be glued to the instance type, got:\n%s", out)
 	}
 }
 
