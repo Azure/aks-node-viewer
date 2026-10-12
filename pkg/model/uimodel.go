@@ -83,8 +83,8 @@ func (u *UIModel) View() string {
 	ctw.Flush()
 	u.progress.ShowPercentage = true
 
-	fmt.Fprintf(&b, "%d pods (%d pending %d running %d bound)\n", stats.TotalPods,
-		stats.PodsByPhase[v1.PodPending], stats.PodsByPhase[v1.PodRunning], stats.BoundPodCount)
+	fmt.Fprintf(&b, "%s pods (%s pending %s running %s bound)\n", formatCount(stats.TotalPods),
+		formatCount(stats.PodsByPhase[v1.PodPending]), formatCount(stats.PodsByPhase[v1.PodRunning]), formatCount(stats.BoundPodCount))
 
 	fmt.Fprintln(&b)
 	for _, n := range stats.Nodes {
@@ -207,11 +207,11 @@ func (u *UIModel) writeClusterSummary(resources []v1.ResourceName, stats Stats, 
 			}
 		}
 		if firstLine {
-			fmt.Fprintf(w, "%d nodes\t%s/%s\t%s\t%s\t%s\t%s\n",
-				stats.NumNodes, used.String(), allocatable.String(), pctUsedStr, res, u.progress.ViewAs(pctUsed/100.0), clusterPrice)
+			fmt.Fprintf(w, "%s nodes\t%s/%s\t%s\t%s\t%s\t%s\n",
+				formatCount(stats.NumNodes), formatResource(res, used), formatResource(res, allocatable), pctUsedStr, res, u.progress.ViewAs(pctUsed/100.0), clusterPrice)
 		} else {
 			fmt.Fprintf(w, " \t%s/%s\t%s\t%s\t%s\t\n",
-				used.String(), allocatable.String(), pctUsedStr, res, u.progress.ViewAs(pctUsed/100.0))
+				formatResource(res, used), formatResource(res, allocatable), pctUsedStr, res, u.progress.ViewAs(pctUsed/100.0))
 		}
 		firstLine = false
 	}
