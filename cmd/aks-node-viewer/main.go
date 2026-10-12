@@ -75,9 +75,11 @@ func main() {
 	m.DisablePricing = flags.DisablePricing
 	m.SetResources(strings.FieldsFunc(flags.Resources, func(r rune) bool { return r == ',' }))
 
-	// The pricing provider starts with an embedded static price list so the UI renders
-	// immediately; live prices are fetched in the background and applied as they arrive.
+	// The pricing provider starts with cached (or embedded static) prices so the UI
+	// renders immediately; live prices are fetched in the background and applied as
+	// they arrive. The status is surfaced in the UI so stale prices are obvious.
 	pprov := pricing.NewProvider(ctx, pricing.NewAPI(), flags.Region)
+	m.PricingStatus = pprov.Status
 	if !flags.DisablePricing {
 		pprov.StartRefresh(ctx)
 		go func() {

@@ -26,6 +26,42 @@ import (
 	"github.com/samber/lo"
 )
 
+// Source identifies where the pricing data currently in use came from.
+type Source int
+
+const (
+	// SourceStatic is the price list embedded at build time. It is the least
+	// accurate source and is only used when no cache is available.
+	SourceStatic Source = iota
+	// SourceCache is pricing persisted by a previous run and loaded from the
+	// XDG cache directory.
+	SourceCache
+	// SourceLive is pricing fetched from the Azure retail prices API during
+	// this run.
+	SourceLive
+)
+
+func (s Source) String() string {
+	switch s {
+	case SourceLive:
+		return "live"
+	case SourceCache:
+		return "cache"
+	default:
+		return "static"
+	}
+}
+
+// Status describes the freshness of the pricing data currently in use.
+type Status struct {
+	// Source is where the current pricing data came from.
+	Source Source
+	// Updated is when the current pricing data was obtained.
+	Updated time.Time
+	// Updating is true while a live refresh is in flight.
+	Updating bool
+}
+
 // Provider provides actual pricing data to the Azure cloud provider to allow it to make more informed decisions
 // regarding which instances to launch.  This is initialized at startup with a periodically updated static price list to
 // support running in locations where pricing data is unavailable.  In those cases the static pricing data provides a
@@ -37,6 +73,9 @@ type Provider struct {
 	region  string
 
 	mu                 sync.RWMutex
+	source             Source
+	updating           bool
+	statusUpdated      time.Time
 	onDemandUpdateTime time.Time
 	onDemandPrices     map[string]float64
 	spotUpdateTime     time.Time
@@ -44,6 +83,10 @@ type Provider struct {
 
 	// watch is signalled (coalesced) whenever a pricing refresh completes
 	watch chan struct{}
+
+	// cacheMu serializes cache writes so concurrent on-demand and spot
+	// refreshes cannot leave an older snapshot on disk.
+	cacheMu sync.Mutex
 }
 
 type Err struct {
@@ -66,6 +109,8 @@ func NewProvider(ctx context.Context, pricing client.PricingAPI, region string) 
 
 	p := &Provider{
 		region:             region,
+		source:             SourceStatic,
+		statusUpdated:      initialPriceUpdate,
 		onDemandUpdateTime: initialPriceUpdate,
 		onDemandPrices:     staticPricing,
 		spotUpdateTime:     initialPriceUpdate,
@@ -74,7 +119,61 @@ func NewProvider(ctx context.Context, pricing client.PricingAPI, region string) 
 		pricing:    pricing,
 		watch:      make(chan struct{}, 1),
 	}
+
+	// Prefer pricing persisted by a previous run over the embedded static
+	// snapshot: it gives a much more accurate baseline while the live refresh
+	// runs in the background.
+	if cached, ok := readCache(region); ok {
+		p.source = SourceCache
+		if len(cached.OnDemandPrices) > 0 {
+			p.onDemandPrices = lo.Assign(cached.OnDemandPrices)
+			p.onDemandUpdateTime = cached.OnDemandUpdateTime
+			p.statusUpdated = cached.OnDemandUpdateTime
+		}
+		if len(cached.SpotPrices) > 0 {
+			p.spotPrices = lo.Assign(cached.SpotPrices)
+			p.spotUpdateTime = cached.SpotUpdateTime
+			if p.statusUpdated.Before(cached.SpotUpdateTime) {
+				p.statusUpdated = cached.SpotUpdateTime
+			}
+		}
+	}
 	return p
+}
+
+// Status reports the freshness of the pricing data currently in use.
+func (p *Provider) Status() Status {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return Status{
+		Source:   p.source,
+		Updated:  p.statusUpdated,
+		Updating: p.updating,
+	}
+}
+
+func (p *Provider) setUpdating(updating bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.updating = updating
+}
+
+// persistCache writes the current pricing data to the XDG cache directory so
+// that the next run can start from it. Cache writes are best-effort.
+func (p *Provider) persistCache() {
+	p.cacheMu.Lock()
+	defer p.cacheMu.Unlock()
+
+	p.mu.RLock()
+	data := &cacheData{
+		Region:             p.region,
+		OnDemandUpdateTime: p.onDemandUpdateTime,
+		OnDemandPrices:     p.onDemandPrices,
+		SpotUpdateTime:     p.spotUpdateTime,
+		SpotPrices:         p.spotPrices,
+	}
+	p.mu.RUnlock()
+	_ = writeCache(data)
 }
 
 // StartRefresh begins loading live pricing data in the background. The provider is seeded
@@ -146,6 +245,9 @@ func (p *Provider) SpotPrice(instanceType string) (float64, bool) {
 }
 
 func (p *Provider) updatePricing(ctx context.Context) {
+	p.setUpdating(true)
+	defer p.setUpdating(false)
+
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
@@ -166,32 +268,24 @@ func (p *Provider) updatePricing(ctx context.Context) {
 
 func (p *Provider) UpdateOnDemandPricing(ctx context.Context) *Err {
 	// standard on-demand instances
-	var wg sync.WaitGroup
-	var onDemandPrices = map[string]float64{}
-	var onDemandErr error
-
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		onDemandErr = p.fetchPricing(ctx, onDemandPage(onDemandPrices))
-	}()
-
-	wg.Wait()
-
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	err := onDemandErr
-	if err != nil {
-		return &Err{error: err, lastUpdateTime: p.onDemandUpdateTime}
+	onDemandPrices := map[string]float64{}
+	if err := p.fetchPricing(ctx, onDemandPage(onDemandPrices)); err != nil {
+		return &Err{error: err, lastUpdateTime: p.OnDemandLastUpdated()}
 	}
 
 	if len(onDemandPrices) == 0 {
-		return &Err{error: errors.New("no on-demand pricing found"), lastUpdateTime: p.onDemandUpdateTime}
+		return &Err{error: errors.New("no on-demand pricing found"), lastUpdateTime: p.OnDemandLastUpdated()}
 	}
 
+	p.mu.Lock()
 	p.onDemandPrices = lo.Assign(onDemandPrices)
 	p.onDemandUpdateTime = time.Now()
+	p.source = SourceLive
+	p.statusUpdated = p.onDemandUpdateTime
+	p.mu.Unlock()
+
 	p.signalUpdate()
+	p.persistCache()
 	return nil
 }
 
@@ -245,32 +339,24 @@ func onDemandPage(prices map[string]float64) func(page *client.ProductsPricePage
 
 func (p *Provider) UpdateSpotPricing(ctx context.Context) *Err {
 	// standard on-demand instances
-	var wg sync.WaitGroup
-	var spotPrices = map[string]float64{}
-	var spotErr error
-
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		spotErr = p.fetchPricing(ctx, spotPage(spotPrices))
-	}()
-
-	wg.Wait()
-
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	err := spotErr
-	if err != nil {
-		return &Err{error: err, lastUpdateTime: p.spotUpdateTime}
+	spotPrices := map[string]float64{}
+	if err := p.fetchPricing(ctx, spotPage(spotPrices)); err != nil {
+		return &Err{error: err, lastUpdateTime: p.SpotLastUpdated()}
 	}
 
 	if len(spotPrices) == 0 {
-		return &Err{error: errors.New("no spot pricing found"), lastUpdateTime: p.spotUpdateTime}
+		return &Err{error: errors.New("no spot pricing found"), lastUpdateTime: p.SpotLastUpdated()}
 	}
 
+	p.mu.Lock()
 	p.spotPrices = lo.Assign(spotPrices)
 	p.spotUpdateTime = time.Now()
+	p.source = SourceLive
+	p.statusUpdated = p.spotUpdateTime
+	p.mu.Unlock()
+
 	p.signalUpdate()
+	p.persistCache()
 	return nil
 }
 

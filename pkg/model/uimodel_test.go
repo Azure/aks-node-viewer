@@ -15,11 +15,14 @@ limitations under the License.
 package model
 
 import (
+	"strings"
 	"testing"
 	"time"
 
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"github.com/Azure/aks-node-viewer/pkg/pricing"
 )
 
 func nodeWithCreation(name string, created time.Time) *Node {
@@ -48,6 +51,49 @@ func TestMakeNodeSorterCreation(t *testing.T) {
 	}
 	if dsc(newer, older) {
 		t.Errorf("expected 'creation=dsc' to not sort newer before older")
+	}
+}
+
+func TestPricingNote(t *testing.T) {
+	style, err := ParseStyle("#04B575,#FFFF00,#FF0000")
+	if err != nil {
+		t.Fatalf("ParseStyle: %v", err)
+	}
+
+	newModel := func(st pricing.Status) *UIModel {
+		u := NewUIModel(nil, "creation=dsc", style)
+		u.PricingStatus = func() pricing.Status { return st }
+		return u
+	}
+
+	// live prices show when they were updated
+	live := time.Date(2026, 10, 12, 15, 4, 0, 0, time.Local)
+	if got := newModel(pricing.Status{Source: pricing.SourceLive, Updated: live}).pricingNote(); !strings.Contains(got, "prices updated 2026-10-12 15:04") {
+		t.Errorf("expected a live note, got %q", got)
+	}
+
+	// cached prices show the cache age
+	cached := time.Now().Add(-2*time.Hour - time.Minute)
+	if got := newModel(pricing.Status{Source: pricing.SourceCache, Updated: cached}).pricingNote(); !strings.Contains(got, "prices cached") || !strings.Contains(got, "2h ago") {
+		t.Errorf("expected a cached note with its age, got %q", got)
+	}
+
+	// static prices are called out as not updated
+	static := time.Date(2023, 3, 1, 19, 26, 21, 0, time.UTC)
+	if got := newModel(pricing.Status{Source: pricing.SourceStatic, Updated: static}).pricingNote(); !strings.Contains(got, "prices not updated") || !strings.Contains(got, "2023-03-01") {
+		t.Errorf("expected a not-updated note, got %q", got)
+	}
+
+	// an in-flight refresh is surfaced
+	refresh := newModel(pricing.Status{Source: pricing.SourceStatic, Updated: static, Updating: true}).pricingNote()
+	if !strings.Contains(refresh, "refreshing") {
+		t.Errorf("expected a refreshing note, got %q", refresh)
+	}
+
+	// without a status callback there is nothing to show
+	u := NewUIModel(nil, "creation=dsc", style)
+	if got := u.pricingNote(); got != "" {
+		t.Errorf("expected an empty note without PricingStatus, got %q", got)
 	}
 }
 

@@ -28,6 +28,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/duration"
 
+	"github.com/Azure/aks-node-viewer/pkg/pricing"
 	"github.com/Azure/aks-node-viewer/pkg/text"
 )
 
@@ -40,6 +41,9 @@ type UIModel struct {
 	style          *Style
 	nodeSorter     func(lhs, rhs *Node) bool
 	DisablePricing bool
+	// PricingStatus, when set, reports the freshness of the pricing data in use
+	// and is displayed next to the cluster price.
+	PricingStatus func() pricing.Status
 }
 
 func NewUIModel(extraLabels []string, nodeSort string, style *Style) *UIModel {
@@ -190,6 +194,8 @@ func (u *UIModel) writeClusterSummary(resources []v1.ResourceName, stats Stats, 
 		clusterPrice := fmt.Sprintf("%0.3f/hour $%0.3f/month", stats.TotalPrice, monthlyPrice)
 		if u.DisablePricing {
 			clusterPrice = ""
+		} else if note := u.pricingNote(); note != "" {
+			clusterPrice += " " + note
 		}
 		if firstLine {
 			fmt.Fprintf(w, "%d nodes\t%s/%s\t%s\t%s\t%s\t%s\n",
@@ -200,6 +206,29 @@ func (u *UIModel) writeClusterSummary(resources []v1.ResourceName, stats Stats, 
 		}
 		firstLine = false
 	}
+}
+
+// pricingNote describes where the currently displayed prices came from and how
+// fresh they are, so it is obvious when they have not been updated.
+func (u *UIModel) pricingNote() string {
+	if u.PricingStatus == nil {
+		return ""
+	}
+	st := u.PricingStatus()
+	updated := st.Updated.Local()
+	var note string
+	switch st.Source {
+	case pricing.SourceLive:
+		note = fmt.Sprintf("prices updated %s", updated.Format("2006-01-02 15:04"))
+	case pricing.SourceCache:
+		note = fmt.Sprintf("prices cached %s (%s ago)", updated.Format("2006-01-02 15:04"), duration.ShortHumanDuration(time.Since(st.Updated)))
+	default:
+		note = fmt.Sprintf("prices not updated since %s", updated.Format("2006-01-02"))
+	}
+	if st.Updating {
+		note += ", refreshing"
+	}
+	return "(" + note + ")"
 }
 
 type tickMsg time.Time

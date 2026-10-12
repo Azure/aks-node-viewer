@@ -64,6 +64,7 @@ func liveOnlyItem() client.Item {
 }
 
 func TestProviderLazyRefresh(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	api := &fakePricingAPI{pages: []*client.ProductsPricePage{
 		{Items: []client.Item{liveOnlyItem(), onDemandItem(), spotItem()}},
 	}}
@@ -96,6 +97,7 @@ func TestProviderLazyRefresh(t *testing.T) {
 }
 
 func TestProviderStaticWithoutRefresh(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	api := &fakePricingAPI{pages: []*client.ProductsPricePage{
 		{Items: []client.Item{liveOnlyItem(), onDemandItem(), spotItem()}},
 	}}

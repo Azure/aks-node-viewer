@@ -100,8 +100,19 @@ aks-node-viewer --style "#04B575,#FFFF00,#FF0000"
 where `<prefix>` is either `aks-node-viewer` or `eks-node-viewer`.
 
 ### Default Options
-You can supply default options to `aks-node-viewer` by creating a file named `.aks-node-viewer` in your home directory and specifying
-options there. The format is `option-name=value` where the option names are the command line flags:
+You can supply default options to `aks-node-viewer` by creating a config file. The
+file is read from the XDG config directory:
+
+```text
+${XDG_CONFIG_HOME:-~/.config}/aks-node-viewer/config
+```
+
+If that file does not exist, the legacy `~/.aks-node-viewer` file is read instead.
+On first run the legacy file is copied into the XDG location automatically, so
+existing configurations keep working. The legacy file is left in place and is
+still used as a fallback if the XDG config is later removed.
+
+The format is `option-name=value` where the option names are the command line flags:
 ```text
 # select only Karpenter managed nodes
 node-selector=karpenter.sh/provisioner-name
@@ -109,6 +120,36 @@ node-selector=karpenter.sh/provisioner-name
 # display both CPU and memory
 resources=cpu,memory
 ```
+
+### Pricing
+
+On startup the viewer immediately displays prices and refreshes them from the
+Azure retail prices API in the background, so the UI is never blocked. Prices are
+sourced, in order of preference, from:
+
+1. the live Azure retail prices API (fetched during the current run),
+2. the on-disk cache written by a previous run, and
+3. the static price list embedded at build time.
+
+Fetched prices are cached so the next run starts from a recent baseline instead
+of the static snapshot. The cache is stored per region in the XDG cache
+directory:
+
+```text
+${XDG_CACHE_HOME:-~/.cache}/aks-node-viewer/pricing-<region>.json
+```
+
+The cluster summary shows where the displayed prices came from and when they were
+last updated, so it is obvious when they are stale, e.g.:
+
+```text
+10 nodes  24/96  25.0%  cpu  ...  12.345/hour $9,001.234/month (prices updated 2026-10-12 15:04)
+```
+
+While a background refresh is in flight the note ends with `, refreshing`. If no
+live prices could be fetched the note makes that explicit, for example
+`(prices not updated since 2023-03-01)` or
+`(prices cached 2026-10-11 09:00 (1d ago))`.
 
 ### Building
 

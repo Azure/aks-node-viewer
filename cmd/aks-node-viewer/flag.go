@@ -18,26 +18,35 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 
 	"k8s.io/client-go/util/homedir"
+
+	"github.com/Azure/aks-node-viewer/pkg/xdg"
 )
 
+const appName = "aks-node-viewer"
+
 var (
-	homeDir    string
-	configPath string
-	version    = "dev"
-	commit     = ""
-	date       = ""
-	builtBy    = ""
+	homeDir          string
+	configPath       string
+	legacyConfigPath string
+	version          = "dev"
+	commit           = ""
+	date             = ""
+	builtBy          = ""
 )
 
 func init() {
 	homeDir = homedir.HomeDir()
-	configPath = filepath.Join(homeDir, ".aks-node-viewer")
+	// Prefer the XDG config directory, falling back to the legacy ~/.aks-node-viewer
+	// location when no XDG config has been created.
+	configPath = filepath.Join(xdg.ConfigDir(appName), "config")
+	legacyConfigPath = filepath.Join(homeDir, ".aks-node-viewer")
 }
 
 type Flags struct {
@@ -134,11 +143,24 @@ func (c configFile) getBoolValue(key string, defaultValue bool) bool {
 
 func loadConfigFile() (configFile, error) {
 	fileContent := make(map[string]string)
-	if _, err := os.Stat(configPath); errors.Is(err, os.ErrNotExist) {
-		return fileContent, nil
+
+	if err := migrateConfig(); err != nil {
+		// migration is best-effort; a failure shouldn't stop the viewer
+		log.Printf("warning: could not migrate legacy config: %v", err)
 	}
 
-	file, err := os.Open(configPath)
+	path := configPath
+	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+		// fall back to the legacy ~/.aks-node-viewer location if there is no
+		// XDG config (e.g. the user removed it or migration was skipped)
+		if _, legacyErr := os.Stat(legacyConfigPath); legacyErr == nil {
+			path = legacyConfigPath
+		} else {
+			return fileContent, nil
+		}
+	}
+
+	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
@@ -162,4 +184,36 @@ func loadConfigFile() (configFile, error) {
 		return nil, err
 	}
 	return fileContent, nil
+}
+
+// migrateConfig copies the legacy ~/.aks-node-viewer config into the XDG config
+// directory. It is a no-op when the XDG config already exists or there is no
+// legacy file. The legacy file is left in place and is still read as a fallback
+// if the XDG config is later removed.
+func migrateConfig() error {
+	if configPath == "" || legacyConfigPath == "" || legacyConfigPath == configPath {
+		return nil
+	}
+	if _, err := os.Stat(configPath); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+
+	data, err := os.ReadFile(legacyConfigPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
+		return err
+	}
+	if err := os.WriteFile(configPath, data, 0o600); err != nil {
+		return err
+	}
+	log.Printf("migrated config from %s to %s", legacyConfigPath, configPath)
+	return nil
 }
