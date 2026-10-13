@@ -278,6 +278,11 @@ func (u *UIModel) pricingNote() string {
 			note += ", nodes in " + clusterRegion
 		}
 	}
+	// When the last refresh failed, say why: otherwise stale prices look like
+	// they simply have not been refreshed yet.
+	if st.Error != "" {
+		note += ", " + st.Error
+	}
 	return "(" + note + ")"
 }
 

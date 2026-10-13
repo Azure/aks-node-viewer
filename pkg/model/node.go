@@ -170,7 +170,10 @@ func (n *Node) InstanceType() string {
 func (n *Node) Zone() string {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
-	return n.node.Labels[v1.LabelTopologyZone]
+	if v := n.node.Labels[v1.LabelTopologyZone]; v != "" {
+		return v
+	}
+	return n.node.Labels["failure-domain.beta.kubernetes.io/zone"]
 }
 
 // Region returns the Azure region the node runs in, from the standard
@@ -178,7 +181,10 @@ func (n *Node) Zone() string {
 func (n *Node) Region() string {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
-	return n.node.Labels[v1.LabelTopologyRegion]
+	if v := n.node.Labels[v1.LabelTopologyRegion]; v != "" {
+		return v
+	}
+	return n.node.Labels["failure-domain.beta.kubernetes.io/region"]
 }
 
 func (n *Node) NumPods() int {

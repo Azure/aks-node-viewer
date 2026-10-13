@@ -17,6 +17,7 @@ package pricing
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync"
@@ -67,6 +68,9 @@ type Status struct {
 	Updating bool
 	// Region is the Azure region the prices were looked up for.
 	Region string
+	// Error describes why the most recent refresh failed, if it did. It is
+	// empty when the last refresh succeeded.
+	Error string
 }
 
 // Provider provides actual pricing data to the Azure cloud provider to allow it to make more informed decisions
@@ -88,6 +92,12 @@ type Provider struct {
 	onDemandPrices     map[string]float64
 	spotUpdateTime     time.Time
 	spotPrices         map[string]float64
+
+	// onDemandErr and spotErr record why the most recent update of each price
+	// set failed, so the UI can explain why prices are stale instead of leaving
+	// the failure invisible.
+	onDemandErr error
+	spotErr     error
 
 	// watch is signalled (coalesced) whenever a pricing refresh completes
 	watch chan struct{}
@@ -135,6 +145,10 @@ func (p *Provider) seedLocked(region string) {
 	p.spotUpdateTime = initialPriceUpdate
 	// default our spot pricing to the same as the on-demand pricing until a price update
 	p.spotPrices = staticPricing
+
+	// any error from a previous region no longer applies
+	p.onDemandErr = nil
+	p.spotErr = nil
 
 	// Prefer pricing persisted by a previous run over the embedded static
 	// snapshot: it gives a much more accurate baseline while the live refresh
@@ -192,7 +206,25 @@ func (p *Provider) Status() Status {
 		Updated:  p.statusUpdated,
 		Updating: p.updating,
 		Region:   p.region,
+		Error:    p.pricingErrorLocked(),
 	}
+}
+
+// pricingErrorLocked describes the most recent pricing failures. It must be
+// called with p.mu held.
+func (p *Provider) pricingErrorLocked() string {
+	switch {
+	case p.onDemandErr != nil && p.spotErr != nil:
+		if p.onDemandErr.Error() == p.spotErr.Error() {
+			return p.onDemandErr.Error()
+		}
+		return fmt.Sprintf("%s; %s", p.onDemandErr, p.spotErr)
+	case p.onDemandErr != nil:
+		return p.onDemandErr.Error()
+	case p.spotErr != nil:
+		return p.spotErr.Error()
+	}
+	return ""
 }
 
 // persistCache writes the current pricing data to the XDG cache directory so
@@ -314,38 +346,35 @@ func (p *Provider) updatePricing(ctx context.Context) {
 	// two regions in a single update.
 	region := p.Region()
 
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		_ = p.updateOnDemandPricing(ctx, region)
-	}()
+	onDemandPrices := map[string]float64{}
+	spotPrices := map[string]float64{}
+	onDemandHandler := onDemandPage(onDemandPrices)
+	spotHandler := spotPage(spotPrices)
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		_ = p.updateSpotPricing(ctx, region)
-	}()
+	// Feed both price sets from a single paginated fetch: the API rate limits
+	// requests, so fetching on-demand and spot separately doubles the number of
+	// calls and makes a partial failure much more likely.
+	err := p.fetchPricing(ctx, region, func(page *client.ProductsPricePage) {
+		onDemandHandler(page)
+		spotHandler(page)
+	})
 
-	wg.Wait()
+	_ = p.storeOnDemandPricing(region, onDemandPrices, err)
+	_ = p.storeSpotPricing(region, spotPrices, err)
 }
 
 // UpdateOnDemandPricing fetches the on-demand prices for the current region.
 func (p *Provider) UpdateOnDemandPricing(ctx context.Context) *Err {
-	return p.updateOnDemandPricing(ctx, p.Region())
+	region := p.Region()
+	onDemandPrices := map[string]float64{}
+	err := p.fetchPricing(ctx, region, onDemandPage(onDemandPrices))
+	return p.storeOnDemandPricing(region, onDemandPrices, err)
 }
 
-func (p *Provider) updateOnDemandPricing(ctx context.Context, region string) *Err {
-	// standard on-demand instances
-	onDemandPrices := map[string]float64{}
-	if err := p.fetchPricing(ctx, region, onDemandPage(onDemandPrices)); err != nil {
-		return &Err{error: err, lastUpdateTime: p.OnDemandLastUpdated()}
-	}
-
-	if len(onDemandPrices) == 0 {
-		return &Err{error: errors.New("no on-demand pricing found"), lastUpdateTime: p.OnDemandLastUpdated()}
-	}
-
+// storeOnDemandPricing applies a fetched set of on-demand prices. It reports why
+// the update failed when the fetch failed or returned no prices, and drops the
+// results when the region changed while the fetch was in flight.
+func (p *Provider) storeOnDemandPricing(region string, prices map[string]float64, fetchErr error) *Err {
 	p.mu.Lock()
 	if region != p.region {
 		// the region changed while we were fetching; the follow-up refresh will
@@ -353,8 +382,23 @@ func (p *Provider) updateOnDemandPricing(ctx context.Context, region string) *Er
 		p.mu.Unlock()
 		return nil
 	}
-	p.onDemandPrices = lo.Assign(onDemandPrices)
+	lastUpdateTime := p.onDemandUpdateTime
+	if fetchErr != nil {
+		err := fmt.Errorf("pricing update failed: %w", fetchErr)
+		p.onDemandErr = err
+		p.mu.Unlock()
+		return &Err{error: err, lastUpdateTime: lastUpdateTime}
+	}
+	if len(prices) == 0 {
+		err := errors.New("no on-demand pricing found")
+		p.onDemandErr = err
+		p.mu.Unlock()
+		return &Err{error: err, lastUpdateTime: lastUpdateTime}
+	}
+
+	p.onDemandPrices = lo.Assign(prices)
 	p.onDemandUpdateTime = time.Now()
+	p.onDemandErr = nil
 	p.source = SourceLive
 	p.statusUpdated = p.onDemandUpdateTime
 	p.mu.Unlock()
@@ -414,20 +458,16 @@ func onDemandPage(prices map[string]float64) func(page *client.ProductsPricePage
 
 // UpdateSpotPricing fetches the spot prices for the current region.
 func (p *Provider) UpdateSpotPricing(ctx context.Context) *Err {
-	return p.updateSpotPricing(ctx, p.Region())
+	region := p.Region()
+	spotPrices := map[string]float64{}
+	err := p.fetchPricing(ctx, region, spotPage(spotPrices))
+	return p.storeSpotPricing(region, spotPrices, err)
 }
 
-func (p *Provider) updateSpotPricing(ctx context.Context, region string) *Err {
-	// standard on-demand instances
-	spotPrices := map[string]float64{}
-	if err := p.fetchPricing(ctx, region, spotPage(spotPrices)); err != nil {
-		return &Err{error: err, lastUpdateTime: p.SpotLastUpdated()}
-	}
-
-	if len(spotPrices) == 0 {
-		return &Err{error: errors.New("no spot pricing found"), lastUpdateTime: p.SpotLastUpdated()}
-	}
-
+// storeSpotPricing applies a fetched set of spot prices. It reports why the
+// update failed when the fetch failed or returned no prices, and drops the
+// results when the region changed while the fetch was in flight.
+func (p *Provider) storeSpotPricing(region string, prices map[string]float64, fetchErr error) *Err {
 	p.mu.Lock()
 	if region != p.region {
 		// the region changed while we were fetching; the follow-up refresh will
@@ -435,8 +475,23 @@ func (p *Provider) updateSpotPricing(ctx context.Context, region string) *Err {
 		p.mu.Unlock()
 		return nil
 	}
-	p.spotPrices = lo.Assign(spotPrices)
+	lastUpdateTime := p.spotUpdateTime
+	if fetchErr != nil {
+		err := fmt.Errorf("pricing update failed: %w", fetchErr)
+		p.spotErr = err
+		p.mu.Unlock()
+		return &Err{error: err, lastUpdateTime: lastUpdateTime}
+	}
+	if len(prices) == 0 {
+		err := errors.New("no spot pricing found")
+		p.spotErr = err
+		p.mu.Unlock()
+		return &Err{error: err, lastUpdateTime: lastUpdateTime}
+	}
+
+	p.spotPrices = lo.Assign(prices)
 	p.spotUpdateTime = time.Now()
+	p.spotErr = nil
 	p.source = SourceLive
 	p.statusUpdated = p.spotUpdateTime
 	p.mu.Unlock()
