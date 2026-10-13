@@ -26,4 +26,7 @@ type Stats struct {
 	PodsByPhase          map[v1.PodPhase]int
 	BoundPodCount        int
 	TotalPrice           float64
+	// SpotSavings is the total hourly saving achieved by running nodes on spot
+	// capacity instead of on-demand.
+	SpotSavings float64
 }

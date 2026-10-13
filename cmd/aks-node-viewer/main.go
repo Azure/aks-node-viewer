@@ -67,18 +67,56 @@ func main() {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 
-	pprov := pricing.NewProvider(ctx, pricing.NewAPI(), "westus2")
-	updateStarted := time.Now()
-	for {
-		if pprov.OnDemandLastUpdated().After(updateStarted) {
-			break
-		}
-		log.Println("waiting on pricing update...")
-		time.Sleep(1 * time.Second)
+	style, err := model.ParseStyle(flags.Style)
+	if err != nil {
+		log.Fatalf("parsing style, %s", err)
 	}
-	m := model.NewUIModel(strings.Split(flags.ExtraLabels, ","))
-
+	m := model.NewUIModel(strings.Split(flags.ExtraLabels, ","), flags.NodeSort, style)
+	m.DisablePricing = flags.DisablePricing
 	m.SetResources(strings.FieldsFunc(flags.Resources, func(r rune) bool { return r == ',' }))
+
+	// Prices are looked up for a single Azure region. Unless the region is set
+	// explicitly, it is taken from the cluster's nodes so a cluster outside the
+	// default region is priced correctly; an explicitly configured region always
+	// wins, and a mismatch with the cluster is surfaced in the UI.
+	regionExplicit := flags.Region != ""
+	region := flags.Region
+	if region == "" {
+		region = pricing.DefaultRegion
+	}
+	clusterRegions := &regionTracker{}
+
+	// The pricing provider starts with cached (or embedded static) prices so the UI
+	// renders immediately; live prices are fetched in the background and applied as
+	// they arrive. The status is surfaced in the UI so stale prices are obvious.
+	pprov := pricing.NewProvider(ctx, pricing.NewAPI(), region)
+	m.PricingStatus = pprov.Status
+	m.ClusterRegion = clusterRegions.summary
+	if !flags.DisablePricing {
+		pprov.Refresh(ctx)
+		go func() {
+			// re-apply prices to nodes whenever fresh pricing data arrives
+			for range pprov.Watch() {
+				m.Cluster().UpdatePrices(pprov)
+			}
+		}()
+	}
+
+	// observeNodeRegion keeps the pricing region in sync with the cluster. When
+	// the region is not set explicitly it is taken from the first node that
+	// reports one; an explicit region is never overridden.
+	observeNodeRegion := func(nodeRegion string) {
+		if nodeRegion == "" {
+			return
+		}
+		clusterRegions.observe(nodeRegion)
+		if flags.DisablePricing || regionExplicit {
+			return
+		}
+		if pprov.SetRegion(clusterRegions.region()) {
+			pprov.Refresh(ctx)
+		}
+	}
 
 	var nodeSelector labels.Selector
 	if ns, err := labels.Parse(flags.NodeSelector); err != nil {
@@ -88,10 +126,11 @@ func main() {
 	}
 
 	monitorSettings := &monitorSettings{
-		clientset:    cs,
-		model:        m,
-		nodeSelector: nodeSelector,
-		pricing:      pprov,
+		clientset:         cs,
+		model:             m,
+		nodeSelector:      nodeSelector,
+		pricing:           pprov,
+		observeNodeRegion: observeNodeRegion,
 	}
 	startMonitor(ctx, monitorSettings)
 	if _, err := tea.NewProgram(m, tea.WithAltScreen()).Run(); err != nil {
@@ -101,13 +140,18 @@ func main() {
 }
 
 type monitorSettings struct {
-	clientset    *kubernetes.Clientset
-	model        *model.UIModel
-	nodeSelector labels.Selector
-	pricing      *pricing.Provider
+	clientset         *kubernetes.Clientset
+	model             *model.UIModel
+	nodeSelector      labels.Selector
+	pricing           *pricing.Provider
+	observeNodeRegion func(region string)
 }
 
 func startMonitor(ctx context.Context, settings *monitorSettings) {
+	if settings.observeNodeRegion == nil {
+		settings.observeNodeRegion = func(string) {}
+	}
+
 	podWatchList := cache.NewListWatchFromClient(settings.clientset.CoreV1().RESTClient(), "pods",
 		v1.NamespaceAll, fields.Everything())
 
@@ -156,6 +200,7 @@ func startMonitor(ctx context.Context, settings *monitorSettings) {
 		cache.ResourceEventHandlerFuncs{
 			AddFunc: func(obj interface{}) {
 				node := model.NewNode(obj.(*v1.Node))
+				settings.observeNodeRegion(node.Region())
 				node.UpdatePrice(settings.pricing)
 				n := cluster.AddNode(node)
 				n.Show()
@@ -173,6 +218,7 @@ func startMonitor(ctx context.Context, settings *monitorSettings) {
 						log.Println("unable to find node", n.Name)
 					} else {
 						node.Update(n)
+						settings.observeNodeRegion(node.Region())
 					}
 					node.Show()
 				}

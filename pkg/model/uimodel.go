@@ -17,31 +17,47 @@ package model
 import (
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/progress"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/facette/natsort"
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/util/duration"
 
+	"github.com/Azure/aks-node-viewer/pkg/pricing"
 	"github.com/Azure/aks-node-viewer/pkg/text"
 )
 
 var helpStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#626262")).Render
 
 type UIModel struct {
-	progress    progress.Model
-	cluster     *Cluster
-	extraLabels []string
+	progress       progress.Model
+	cluster        *Cluster
+	extraLabels    []string
+	style          *Style
+	nodeSorter     func(lhs, rhs *Node) bool
+	DisablePricing bool
+	// PricingStatus, when set, reports the freshness of the pricing data in use
+	// and is displayed next to the cluster price.
+	PricingStatus func() pricing.Status
+	// ClusterRegion, when set, returns the Azure region reported by the
+	// cluster's nodes (empty until one is observed). It is compared against the
+	// region the prices are for so a mismatch is surfaced in the UI.
+	ClusterRegion func() string
 }
 
-func NewUIModel(extraLabels []string) *UIModel {
+func NewUIModel(extraLabels []string, nodeSort string, style *Style) *UIModel {
 	return &UIModel{
 		// red to green
-		progress:    progress.New(progress.WithGradient("#ff0000", "#04B575")),
+		progress:    progress.New(style.gradient),
 		cluster:     NewCluster(),
 		extraLabels: extraLabels,
+		style:       style,
+		nodeSorter:  makeNodeSorter(nodeSort),
 	}
 }
 
@@ -53,14 +69,15 @@ func (u *UIModel) Init() tea.Cmd {
 	return tickCmd()
 }
 
-var green = lipgloss.NewStyle().Foreground(lipgloss.Color("#04B575")).Render
-var yellow = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFFF00")).Render
-var red = lipgloss.NewStyle().Foreground(lipgloss.Color("#ff0000")).Render
-
 func (u *UIModel) View() string {
 	b := strings.Builder{}
 
 	stats := u.cluster.Stats()
+
+	sort.Slice(stats.Nodes, func(a, b int) bool {
+		return u.nodeSorter(stats.Nodes[a], stats.Nodes[b])
+	})
+
 	if stats.NumNodes == 0 {
 		return "Waiting for update or no nodes found..."
 	}
@@ -70,8 +87,8 @@ func (u *UIModel) View() string {
 	ctw.Flush()
 	u.progress.ShowPercentage = true
 
-	fmt.Fprintf(&b, "%d pods (%d pending %d running %d bound)\n", stats.TotalPods,
-		stats.PodsByPhase[v1.PodPending], stats.PodsByPhase[v1.PodRunning], stats.BoundPodCount)
+	fmt.Fprintf(&b, "%s pods (%s pending %s running %s bound)\n", formatCount(stats.TotalPods),
+		formatCount(stats.PodsByPhase[v1.PodPending]), formatCount(stats.PodsByPhase[v1.PodRunning]), formatCount(stats.BoundPodCount))
 
 	fmt.Fprintln(&b)
 	for _, n := range stats.Nodes {
@@ -103,11 +120,14 @@ func (u *UIModel) writeNodeInfo(n *Node, w io.Writer, resources []v1.ResourceNam
 		}
 
 		if firstLine {
-			priceLabel := fmt.Sprintf("/$%0.3f", n.Price)
-			if n.Price != n.Price {
-				priceLabel = ""
+			priceLabel := ""
+			if n.HasPrice() && !u.DisablePricing {
+				priceLabel = fmt.Sprintf("$%0.3f", n.Price())
 			}
-			fmt.Fprintf(w, "%s\t%s\t%s\t(%d pods)\t%s%s", n.Name(), res, u.progress.ViewAs(pct), n.NumPods(), n.InstanceType(), priceLabel)
+			maxPods, _ := allocatable.Pods().AsInt64()
+			fmt.Fprintf(w, "%s\t%s\t%s\t(%d/%d pods)\t%s\t%s", n.Name(), res, u.progress.ViewAs(pct), n.NumPods(), maxPods, n.InstanceType(), priceLabel)
+
+			// node compute type
 			if n.IsOnDemand() {
 				fmt.Fprintf(w, "\tOn-Demand")
 			} else if n.IsSpot() {
@@ -116,6 +136,7 @@ func (u *UIModel) writeNodeInfo(n *Node, w io.Writer, resources []v1.ResourceNam
 				fmt.Fprintf(w, "\t-")
 			}
 
+			// node status
 			if n.Cordoned() && n.Deleting() {
 				fmt.Fprintf(w, "\tCordoned/Deleting")
 			} else if n.Deleting() {
@@ -126,18 +147,19 @@ func (u *UIModel) writeNodeInfo(n *Node, w io.Writer, resources []v1.ResourceNam
 				fmt.Fprintf(w, "\t-")
 			}
 
+			// node readiness or time we've been waiting for it to be ready
 			if n.Ready() {
 				fmt.Fprintf(w, "\tReady")
 			} else {
-				fmt.Fprintf(w, "\t%s", time.Since(n.Created()).Round(time.Millisecond).String())
+				fmt.Fprintf(w, "\tNotReady/%s", duration.HumanDuration(time.Since(n.NotReadyTime())))
 			}
 
 			for _, label := range u.extraLabels {
-				fmt.Fprintf(w, "\t%s", n.node.Labels[label])
+				fmt.Fprintf(w, "\t%s", u.formatLabelValue(n, label))
 			}
 
 		} else {
-			fmt.Fprintf(w, " \t%s\t%s\t\t\t\t\t", res, u.progress.ViewAs(pct))
+			fmt.Fprintf(w, " \t%s\t%s\t\t\t\t\t\t", res, u.progress.ViewAs(pct))
 			for range u.extraLabels {
 				fmt.Fprintf(w, "\t")
 			}
@@ -159,25 +181,109 @@ func (u *UIModel) writeClusterSummary(resources []v1.ResourceName, stats Stats, 
 		}
 		pctUsedStr := fmt.Sprintf("%0.1f%%", pctUsed)
 		if pctUsed > 90 {
-			pctUsedStr = green(pctUsedStr)
+			pctUsedStr = u.style.green(pctUsedStr)
 		} else if pctUsed > 60 {
-			pctUsedStr = yellow(pctUsedStr)
+			pctUsedStr = u.style.yellow(pctUsedStr)
 		} else {
-			pctUsedStr = red(pctUsedStr)
+			pctUsedStr = u.style.red(pctUsedStr)
 		}
 
 		u.progress.ShowPercentage = false
 		monthlyPrice := stats.TotalPrice * (365 * 24) / 12 // average hours per month
 		clusterPrice := fmt.Sprintf("%0.3f/hour $%0.3f/month", stats.TotalPrice, monthlyPrice)
+		if u.DisablePricing {
+			clusterPrice = ""
+		} else {
+			notes := []string{}
+			if savings := u.spotSavingsNote(stats); savings != "" {
+				notes = append(notes, savings)
+			}
+			if note := u.pricingNote(); note != "" {
+				notes = append(notes, note)
+			}
+			if len(notes) > 0 {
+				clusterPrice += " " + strings.Join(notes, " ")
+			}
+		}
 		if firstLine {
-			fmt.Fprintf(w, "%d nodes\t%s/%s\t%s\t%s\t%s\t%s\n",
-				stats.NumNodes, used.String(), allocatable.String(), pctUsedStr, res, u.progress.ViewAs(pctUsed/100.0), clusterPrice)
+			fmt.Fprintf(w, "%s nodes\t%s/%s\t%s\t%s\t%s\t%s\n",
+				formatCount(stats.NumNodes), formatResource(res, used), formatResource(res, allocatable), pctUsedStr, res, u.progress.ViewAs(pctUsed/100.0), clusterPrice)
 		} else {
 			fmt.Fprintf(w, " \t%s/%s\t%s\t%s\t%s\t\n",
-				used.String(), allocatable.String(), pctUsedStr, res, u.progress.ViewAs(pctUsed/100.0))
+				formatResource(res, used), formatResource(res, allocatable), pctUsedStr, res, u.progress.ViewAs(pctUsed/100.0))
 		}
 		firstLine = false
 	}
+}
+
+// formatLabelValue resolves the display value for an extra label. Node labels
+// are shown verbatim and computed labels are resolved through the node. The
+// spot savings label is special-cased so its on-demand price is dimmed, making
+// it clear that the value is only a reference and not the node's cost.
+func (u *UIModel) formatLabelValue(n *Node, label string) string {
+	if value, ok := n.node.Labels[label]; ok {
+		return value
+	}
+	switch label {
+	case "aks-node-viewer/node-spot-savings", "eks-node-viewer/node-spot-savings":
+		if reference, pct, ok := n.SpotSavingsReference(); ok {
+			return fmt.Sprintf("%s %d%%", u.style.dim(reference), pct)
+		}
+		return "-"
+	}
+	return n.ComputeLabel(label)
+}
+
+// spotSavingsNote describes the hourly saving achieved by running nodes on spot
+// capacity instead of on-demand, and the share of the equivalent on-demand cost
+// it represents. It is empty when there are no known savings.
+func (u *UIModel) spotSavingsNote(stats Stats) string {
+	if stats.SpotSavings <= 0 {
+		return ""
+	}
+	pct := 0.0
+	if baseline := stats.TotalPrice + stats.SpotSavings; baseline > 0 {
+		pct = 100 * stats.SpotSavings / baseline
+	}
+	return fmt.Sprintf("saved $%0.3f/hour (%.0f%%)", stats.SpotSavings, pct)
+}
+
+// pricingNote describes where the currently displayed prices came from and how
+// fresh they are, so it is obvious when they have not been updated.
+func (u *UIModel) pricingNote() string {
+	if u.PricingStatus == nil {
+		return ""
+	}
+	st := u.PricingStatus()
+	updated := st.Updated.Local()
+	var note string
+	switch st.Source {
+	case pricing.SourceLive:
+		note = fmt.Sprintf("prices updated %s", updated.Format("2006-01-02 15:04"))
+	case pricing.SourceCache:
+		note = fmt.Sprintf("prices cached %s (%s ago)", updated.Format("2006-01-02 15:04"), duration.ShortHumanDuration(time.Since(st.Updated)))
+	default:
+		note = fmt.Sprintf("prices not updated since %s", updated.Format("2006-01-02"))
+	}
+	if st.Updating {
+		note += ", refreshing"
+	}
+	if st.Region != "" {
+		note += ", region " + st.Region
+	}
+	// A mismatch means prices are being looked up for a region other than the
+	// one the nodes are in, which happens when --region was set explicitly.
+	if u.ClusterRegion != nil {
+		if clusterRegion := u.ClusterRegion(); clusterRegion != "" && clusterRegion != st.Region {
+			note += ", nodes in " + clusterRegion
+		}
+	}
+	// When the last refresh failed, say why: otherwise stale prices look like
+	// they simply have not been refreshed yet.
+	if st.Error != "" {
+		note += ", " + st.Error
+	}
+	return "(" + note + ")"
 }
 
 type tickMsg time.Time
@@ -208,5 +314,43 @@ func (u *UIModel) SetResources(resources []string) {
 	u.cluster.resources = nil
 	for _, r := range resources {
 		u.cluster.resources = append(u.cluster.resources, v1.ResourceName(r))
+	}
+}
+
+// makeNodeSorter returns a less-than comparator for nodes based on a sort
+// specification. The spec is either 'creation' or a node label name, and can be
+// suffixed with '=asc' (default) or '=dsc' to control the sort direction.
+func makeNodeSorter(nodeSort string) func(lhs *Node, rhs *Node) bool {
+	sortOrder := func(b bool) bool { return b }
+	if trimmed, ok := strings.CutSuffix(nodeSort, "=asc"); ok {
+		nodeSort = trimmed
+	}
+	if trimmed, ok := strings.CutSuffix(nodeSort, "=dsc"); ok {
+		sortOrder = func(b bool) bool { return !b }
+		nodeSort = trimmed
+	}
+
+	if nodeSort == "creation" {
+		return func(lhs *Node, rhs *Node) bool {
+			if lhs.Created().Equal(rhs.Created()) {
+				return sortOrder(natsort.Compare(lhs.Name(), rhs.Name()))
+			}
+			return sortOrder(rhs.Created().Before(lhs.Created()))
+		}
+	}
+
+	return func(lhs *Node, rhs *Node) bool {
+		lhsLabel, ok := lhs.node.Labels[nodeSort]
+		if !ok {
+			lhsLabel = lhs.ComputeLabel(nodeSort)
+		}
+		rhsLabel, ok := rhs.node.Labels[nodeSort]
+		if !ok {
+			rhsLabel = rhs.ComputeLabel(nodeSort)
+		}
+		if lhsLabel == rhsLabel {
+			return sortOrder(natsort.Compare(lhs.Name(), rhs.Name()))
+		}
+		return sortOrder(natsort.Compare(lhsLabel, rhsLabel))
 	}
 }

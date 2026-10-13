@@ -17,6 +17,30 @@ go install github.com/Azure/aks-node-viewer/cmd/aks-node-viewer@latest
 
 Note: This will install it to your `GOBIN` directory, typically `~/go/bin` if it is unconfigured.
 
+#### Nix
+
+A [Nix flake](./flake.nix) is included, so on NixOS (or any system with Nix installed) you can run
+the viewer without installing anything permanently:
+
+```shell
+# run directly from the repository
+nix run .
+# ...or from GitHub
+nix run github:Azure/aks-node-viewer
+
+# build and install into your profile
+nix profile install .
+```
+
+#### Development shell
+
+The flake provides a development shell with Go, goreleaser, golangci-lint and go-licenses:
+
+```shell
+nix develop
+# or, if you use direnv, .envrc already runs `use flake`
+```
+
 ## Usage
 ```shell
 Usage of ./aks-node-viewer:
@@ -32,8 +56,14 @@ Usage of ./aks-node-viewer:
     	Absolute path to the kubeconfig file (default "~/.kube/config")
   -node-selector string
     	Node label selector used to filter nodes, if empty all nodes are selected
+  -node-sort string
+    	Sort order for the nodes, either 'creation' or a label name. The sort order defaults to ascending and can be controlled by appending =asc or =dsc to the value. (default "creation=dsc")
+  -region string
+    	Azure region to use for pricing lookups. When empty the region is detected from the cluster's nodes.
   -resources string
-    	List of comma separated resources to monitor (default "cpu")
+    	List of comma separated resources to monitor (default "cpu,memory")
+  -style string
+    	Three colors to use for styling 'good', 'ok' and 'bad' values, e.g. "#04B575,#FFFF00,#FF0000"
   -v	Display aks-node-viewer version
   -version
     	Display aks-node-viewer version
@@ -43,17 +73,47 @@ Usage of ./aks-node-viewer:
 ```shell
 # Standard usage
 aks-node-viewer
-# Karenter nodes only
+# Karpenter nodes only
 aks-node-viewer --node-selector "karpenter.sh/provisioner-name"
 # Display both CPU and Memory Usage
 aks-node-viewer --resources cpu,memory
 # Display extra labels, i.e. AZ
 aks-node-viewer --extra-labels topology.kubernetes.io/zone
+# Sort nodes by CPU usage, ascending
+aks-node-viewer --node-sort cpu
+# Sort nodes newest first
+aks-node-viewer --node-sort creation=asc
+# Use a custom color scheme
+aks-node-viewer --style "#04B575,#FFFF00,#FF0000"
 ```
 
+### Computed Labels
+
+`aks-node-viewer` supports some custom label names that can be passed to the `--extra-labels` to display additional node information. Both the `aks-node-viewer/` and `eks-node-viewer/` prefixes are accepted, so configs written for [eks-node-viewer](https://github.com/awslabs/eks-node-viewer) keep working.
+
+- `<prefix>/node-age` - Age of the node
+- `<prefix>/node-spot-savings` - For a spot node, the on-demand price shown dimmed as a reference followed by the percentage saved, e.g. `$0.100 50%` (`-` for on-demand nodes or when a price is unknown)
+- `<prefix>/node-cpu-usage` - CPU requests as a percentage of allocatable CPU
+- `<prefix>/node-memory-usage` - Memory requests as a percentage of allocatable memory
+- `<prefix>/node-pods-usage` - Pods scheduled as a percentage of the pod capacity
+- `<prefix>/node-ephemeral-storage-usage` - Ephemeral storage requests as a percentage of allocatable ephemeral storage
+
+where `<prefix>` is either `aks-node-viewer` or `eks-node-viewer`.
+
 ### Default Options
-You can supply default options to `aks-node-viewer` by creating a file named `.aks-node-viewer` in your home directory and specifying
-options there. The format is `option-name=value` where the option names are the command line flags:
+You can supply default options to `aks-node-viewer` by creating a config file. The
+file is read from the XDG config directory:
+
+```text
+${XDG_CONFIG_HOME:-~/.config}/aks-node-viewer/config
+```
+
+If that file does not exist, the legacy `~/.aks-node-viewer` file is read instead.
+On first run the legacy file is copied into the XDG location automatically, so
+existing configurations keep working. The legacy file is left in place and is
+still used as a fallback if the XDG config is later removed.
+
+The format is `option-name=value` where the option names are the command line flags:
 ```text
 # select only Karpenter managed nodes
 node-selector=karpenter.sh/provisioner-name
@@ -61,6 +121,64 @@ node-selector=karpenter.sh/provisioner-name
 # display both CPU and memory
 resources=cpu,memory
 ```
+
+### Pricing
+
+On startup the viewer immediately displays prices and refreshes them from the
+Azure retail prices API in the background, so the UI is never blocked. Prices are
+sourced, in order of preference, from:
+
+1. the live Azure retail prices API (fetched during the current run),
+2. the on-disk cache written by a previous run, and
+3. the static price list embedded at build time.
+
+Fetched prices are cached so the next run starts from a recent baseline instead
+of the static snapshot. The cache is stored per region in the XDG cache
+directory:
+
+```text
+${XDG_CACHE_HOME:-~/.cache}/aks-node-viewer/pricing-<region>.json
+```
+
+Prices are looked up for a single Azure region. Unless `-region` is set, the
+region is taken from the cluster's nodes (their
+`topology.kubernetes.io/region` label), so a cluster outside the default region
+is still priced correctly. An explicitly configured region always wins; if it
+does not match the region the nodes are in, the summary says so. When no node
+reports a region the embedded snapshot's region (eastus) is used.
+
+The cluster summary shows where the displayed prices came from, which region
+they are for and when they were last updated, so it is obvious when they are
+stale, e.g.:
+
+```text
+10 nodes  24/96  25.0%  cpu  ...  12.345/hour $9,001.234/month (prices updated 2026-10-12 15:04, region eastus)
+```
+
+When nodes are running on spot capacity, the total saving versus running them
+on-demand is shown next to the total price, as an hourly amount and the share of
+the equivalent on-demand cost:
+
+```text
+10 nodes  24/96  25.0%  cpu  ...  1.330/hour $970.900/month saved $0.250/hour (18%) (prices updated 2026-10-12 15:04, region eastus)
+```
+
+With an explicit `-region` that differs from the cluster's region the note makes
+the mismatch visible:
+
+```text
+... saved $0.250/hour (18%) (prices updated 2026-10-12 15:04, region westus2, nodes in eastus)
+```
+
+The per-node figure can be added as a column with
+`--extra-labels aks-node-viewer/node-spot-savings`. For a spot node it shows the
+on-demand price dimmed (a reference, not the node's cost) followed by the
+percentage saved, for example `$0.100 50%`:
+
+While a background refresh is in flight the note includes `, refreshing`. If no
+live prices could be fetched the note makes that explicit, for example
+`(prices not updated since 2023-03-01, region eastus)` or
+`(prices cached 2026-10-11 09:00 (1d ago), region eastus)`.
 
 ### Building
 
@@ -71,6 +189,12 @@ $ make build
 Or local execution of GoReleaser build:
 ```shell
 $ make goreleaser
+```
+
+Or with Nix:
+```shell
+$ nix build
+$ ./result/bin/aks-node-viewer
 ```
 
 ### Source Attribution
